@@ -276,6 +276,24 @@ function generatePurchaseOrders() {
       return qty;
     };
 
+    // Simulate projected stock over this order cycle after injecting an order now.
+    const simulateCyclePeakStock = (weekIndex, preOrderClosing, orderQty, cycleWeeks) => {
+      let tempRunning = preOrderClosing + orderQty;
+      let peak = tempRunning;
+      const weeksToSimulate = Math.max(1, cycleWeeks);
+
+      for (let f = 1; f < weeksToSimulate; f++) {
+        if (weekIndex + f >= weekHeaders.length) break;
+        const fIndex = weekColMap.get(weekHeaders[weekIndex + f]);
+        const fIn = parseNum(rowInboundDue[fIndex]) + parseNum(rowInboundRec[fIndex]);
+        const fOut = parseNum(rowForecast[fIndex]) + parseNum(rowTransfers[fIndex]);
+        const fAdj = parseNum(rowAdj[fIndex]);
+        tempRunning = tempRunning + fIn - fOut + fAdj;
+        if (tempRunning > peak) peak = tempRunning;
+      }
+      return peak;
+    };
+
     // --- SIMULATION LOOP ---
     for (let w = simulationStartIndex; w < weekHeaders.length; w++) {
       const thisWeekStr = weekHeaders[w];
@@ -340,9 +358,19 @@ function generatePurchaseOrders() {
 
           const commentParts = [];
           const maxAllowedQty = product.maxStock > 0 ? product.maxStock - (startStockForWeek + inbound) : Number.POSITIVE_INFINITY;
+          const cycleWeeks = Math.max(1, freqWeeksToCover);
+          const preferredMaxPoint = Math.max(
+            startStockForWeek + inbound + qtyForPreferredCoverage,
+            simulateCyclePeakStock(w, weekClosing, qtyForPreferredCoverage, cycleWeeks)
+          );
+          const serviceMaxPoint = Math.max(
+            startStockForWeek + inbound + qtyForHardService,
+            simulateCyclePeakStock(w, weekClosing, qtyForHardService, cycleWeeks)
+          );
 
-          if (isFinite(maxAllowedQty) && qtyForPreferredCoverage > maxAllowedQty) {
-            if (qtyForHardService <= maxAllowedQty) {
+          // Prioritize avoiding max breaches over ideal frequency whenever possible.
+          if (product.maxStock > 0 && preferredMaxPoint > product.maxStock) {
+            if (serviceMaxPoint <= product.maxStock) {
               // Respect max by dialing back from frequency-fill to minimum service floor.
               qtyToOrder = qtyForHardService;
               strategy = `${strategy} (Soft Capped)`;
@@ -354,6 +382,9 @@ function generatePurchaseOrders() {
 
               if (hardServiceDeficit > maxAllowedQty) {
                 breachReasons.push("Coverage");
+              }
+              if (serviceMaxPoint > product.maxStock && hardServiceDeficit <= maxAllowedQty) {
+                breachReasons.push("Projected Peak");
               }
 
               if (product.orderType === "case" && product.caseSize > 0 && hardServiceDeficit <= maxAllowedQty) {
@@ -399,10 +430,11 @@ function generatePurchaseOrders() {
           const orderWeekStr = getIsoWeekString(orderDate);
           const arrivalWeekStr = getIsoWeekString(plannedArrivalDate);
 
-          // Flag max breaches using both "arrival peak" and modeled post-order closing.
-          const arrivalPeakStock = startStockForWeek + inbound + qtyToOrder;
-          const postOrderClosingStock = weekClosing + qtyToOrder;
-          const modeledMaxPoint = Math.max(arrivalPeakStock, postOrderClosingStock);
+          // Flag max breaches using arrival peak and cycle-window projected peak.
+          const modeledMaxPoint = Math.max(
+            startStockForWeek + inbound + qtyToOrder,
+            simulateCyclePeakStock(w, weekClosing, qtyToOrder, Math.max(1, freqWeeksToCover))
+          );
           if (
             product.maxStock > 0 &&
             modeledMaxPoint > product.maxStock &&
