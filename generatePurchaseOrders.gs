@@ -377,21 +377,27 @@ function generatePurchaseOrders() {
 
           // Order Timing & Buffer
           const shortageDate = weekDates[w];
-          const bufferedArrivalDate = new Date(shortageDate);
-          bufferedArrivalDate.setDate(bufferedArrivalDate.getDate() - ARRIVAL_BUFFER_WEEKS * 7);
+          const targetArrivalDate = new Date(shortageDate);
+          targetArrivalDate.setDate(targetArrivalDate.getDate() - ARRIVAL_BUFFER_WEEKS * 7);
 
-          if (bufferedArrivalDate < currentDateObj) {
-            bufferedArrivalDate.setTime(currentDateObj.getTime());
+          // Arrival cannot be earlier than what lead time allows from "now".
+          const earliestFeasibleArrivalDate = new Date(currentDateObj);
+          earliestFeasibleArrivalDate.setDate(earliestFeasibleArrivalDate.getDate() + product.leadTimeDays);
+
+          const plannedArrivalDate = new Date(targetArrivalDate);
+          if (plannedArrivalDate < earliestFeasibleArrivalDate) {
+            plannedArrivalDate.setTime(earliestFeasibleArrivalDate.getTime());
+            commentParts.push("Lead Time Constraint (Arrival Shifted Later)");
           }
 
-          const orderDate = new Date(bufferedArrivalDate);
+          const orderDate = new Date(plannedArrivalDate);
           orderDate.setDate(orderDate.getDate() - product.leadTimeDays);
+          if (orderDate < currentDateObj) {
+            orderDate.setTime(currentDateObj.getTime());
+          }
 
-          let orderWeekStr;
-          if (orderDate < currentDateObj) orderWeekStr = currentWeekStr;
-          else orderWeekStr = getIsoWeekString(orderDate);
-
-          const arrivalWeekStr = getIsoWeekString(bufferedArrivalDate);
+          const orderWeekStr = getIsoWeekString(orderDate);
+          const arrivalWeekStr = getIsoWeekString(plannedArrivalDate);
 
           const potentialPeakStock = startStockForWeek + inbound + qtyToOrder;
           if (
