@@ -18,6 +18,7 @@ function generatePurchaseOrders() {
 
   // --- CONFIGURATION ---
   const ARRIVAL_BUFFER_WEEKS = 2; // Stock must arrive this many weeks BEFORE the shortage
+  const SINGLE_LOCATION_MODE = true; // This planner serves one DC/location; match settings primarily by SKU.
   const INV_HEADER_ROW = 6;
   const INV_DATA_START_ROW = 7;
   const CURRENT_WEEK_CELL = "B2";
@@ -45,6 +46,8 @@ function generatePurchaseOrders() {
   // --- 1. READ SETTINGS ---
   const settingsMap = new Map();
   const settingsLooseMap = new Map();
+  const settingsSkuMap = new Map();
+  const settingsSkuLooseMap = new Map();
   const normalizeToken = (val) => String(val || "").trim().toLowerCase();
   const normalizeCompact = (val) => normalizeToken(val).replace(/[^a-z0-9]/g, "");
   const generateKey = (loc, sku) => `${normalizeToken(loc)}_${normalizeToken(sku)}`;
@@ -78,6 +81,10 @@ function generatePurchaseOrders() {
       settingsMap.set(generateKey(loc, nsid), productConfig);
       const looseKey = generateLooseKey(loc, nsid);
       if (!settingsLooseMap.has(looseKey)) settingsLooseMap.set(looseKey, productConfig);
+      const skuKey = normalizeToken(nsid);
+      const skuLooseKey = normalizeCompact(nsid);
+      if (!settingsSkuMap.has(skuKey)) settingsSkuMap.set(skuKey, productConfig);
+      if (!settingsSkuLooseMap.has(skuLooseKey)) settingsSkuLooseMap.set(skuLooseKey, productConfig);
     }
   }
 
@@ -142,7 +149,7 @@ function generatePurchaseOrders() {
     const locRaw = firstRow[0];
     const nsidRaw = firstRow[1];
 
-    if (!locRaw || !nsidRaw) {
+    if (!nsidRaw) {
       currentRowIndex++;
       continue;
     }
@@ -158,7 +165,12 @@ function generatePurchaseOrders() {
       const nextLoc = String(nextRow[0]).trim();
       const nextNsid = String(nextRow[1]).trim();
 
-      if (blockRows.length > 0 && nextLoc !== "" && (nextLoc !== loc || nextNsid !== nsid)) {
+      if (blockRows.length > 0 && nextNsid !== "") {
+        const skuChanged = nextNsid !== nsid;
+        const locChanged = nextLoc !== "" && loc !== "" && nextLoc !== loc;
+        if (skuChanged || (!SINGLE_LOCATION_MODE && locChanged)) break;
+      }
+      if (blockRows.length > 0 && nextNsid === "" && nextLoc !== "" && !SINGLE_LOCATION_MODE && loc !== "" && nextLoc !== loc) {
         break;
       }
       blockRows.push(nextRow);
@@ -166,9 +178,14 @@ function generatePurchaseOrders() {
     }
 
     scanStats.blocksScanned++;
-    let product = settingsMap.get(key);
-    if (!product) {
-      product = settingsLooseMap.get(generateLooseKey(loc, nsid));
+    let product;
+    if (SINGLE_LOCATION_MODE) {
+      product = settingsSkuMap.get(normalizeToken(nsid)) || settingsSkuLooseMap.get(normalizeCompact(nsid));
+    } else {
+      product = settingsMap.get(key) || settingsLooseMap.get(generateLooseKey(loc, nsid));
+      if (!product) {
+        product = settingsSkuMap.get(normalizeToken(nsid)) || settingsSkuLooseMap.get(normalizeCompact(nsid));
+      }
     }
     if (!product) {
       scanStats.missingSettings++;
