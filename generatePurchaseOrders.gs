@@ -19,11 +19,12 @@ function generatePurchaseOrders() {
   // --- CONFIGURATION ---
   const ARRIVAL_BUFFER_WEEKS = 2; // Stock must arrive this many weeks BEFORE the shortage
   const SINGLE_LOCATION_MODE = true; // This planner serves one DC/location; match settings primarily by SKU.
+  const SINGLE_LOCATION_NAME = "AMV DC";
   const INV_HEADER_ROW = 6;
   const INV_DATA_START_ROW = 7;
   const CURRENT_WEEK_CELL = "B2";
-  // 1-based column candidates where row labels may live in planner blocks (D, C, E).
-  const LABEL_COL_CANDIDATES = [4, 3, 5];
+  const INV_SKU_COL = 1; // Column A
+  const INV_LABEL_COL = 3; // Column C
 
   // --- SHEETS ---
   const settingsSheet = ss.getSheetByName("📋 Product Settings");
@@ -44,14 +45,10 @@ function generatePurchaseOrders() {
   }
 
   // --- 1. READ SETTINGS ---
-  const settingsMap = new Map();
-  const settingsLooseMap = new Map();
   const settingsSkuMap = new Map();
   const settingsSkuLooseMap = new Map();
   const normalizeToken = (val) => String(val || "").trim().toLowerCase();
   const normalizeCompact = (val) => normalizeToken(val).replace(/[^a-z0-9]/g, "");
-  const generateKey = (loc, sku) => `${normalizeToken(loc)}_${normalizeToken(sku)}`;
-  const generateLooseKey = (loc, sku) => `${normalizeCompact(loc)}_${normalizeCompact(sku)}`;
   const parseNum = (val) => {
     if (typeof val === "number") return val;
     if (!val) return 0;
@@ -60,31 +57,41 @@ function generatePurchaseOrders() {
   };
 
   const settingsData = settingsSheet.getRange(3, 1, settingsSheet.getLastRow() - 2, 13).getValues();
+  const buildProductConfig = (row, offset) => ({
+    skuName: row[offset + 1],
+    leadTimeDays: Number(row[offset + 2]) || 0,
+    safetyStock: Number(row[offset + 3]) || 0,
+    lastWeekPlanned: row[offset + 4],
+    orderFreqDays: Number(row[offset + 5]) || 0,
+    moq: Number(row[offset + 6]) || 0,
+    maxStock: parseNum(row[offset + 7]),
+    orderType: String(row[offset + 8]).toLowerCase(),
+    caseSize: Number(row[offset + 9]) || 0,
+    unitsPerPallet: row[offset + 10]
+  });
+  const addSettingsVariant = (row, offset, overwrite) => {
+    const skuRaw = row[offset];
+    if (!skuRaw) return false;
+    const sku = normalizeToken(skuRaw);
+    const skuLoose = normalizeCompact(skuRaw);
+    const productConfig = buildProductConfig(row, offset);
+
+    if (overwrite || !settingsSkuMap.has(sku)) settingsSkuMap.set(sku, productConfig);
+    if (overwrite || !settingsSkuLooseMap.has(skuLoose)) settingsSkuLooseMap.set(skuLoose, productConfig);
+    return true;
+  };
 
   for (let r = 0; r < settingsData.length; r++) {
     const row = settingsData[r];
-    const loc = row[0];
-    const nsid = row[1];
-    if (loc && nsid) {
-      const productConfig = {
-        skuName: row[2],
-        leadTimeDays: Number(row[3]) || 0,
-        safetyStock: Number(row[4]) || 0,
-        lastWeekPlanned: row[5],
-        orderFreqDays: Number(row[6]) || 0,
-        moq: Number(row[7]) || 0,
-        maxStock: parseNum(row[8]),
-        orderType: String(row[9]).toLowerCase(),
-        caseSize: Number(row[10]) || 0,
-        unitsPerPallet: row[11]
-      };
-      settingsMap.set(generateKey(loc, nsid), productConfig);
-      const looseKey = generateLooseKey(loc, nsid);
-      if (!settingsLooseMap.has(looseKey)) settingsLooseMap.set(looseKey, productConfig);
-      const skuKey = normalizeToken(nsid);
-      const skuLooseKey = normalizeCompact(nsid);
-      if (!settingsSkuMap.has(skuKey)) settingsSkuMap.set(skuKey, productConfig);
-      if (!settingsSkuLooseMap.has(skuLooseKey)) settingsSkuLooseMap.set(skuLooseKey, productConfig);
+    // Supports both layouts:
+    //  - single-location: SKU in col A (offset 0)
+    //  - legacy layout:   SKU in col B (offset 1)
+    if (SINGLE_LOCATION_MODE) {
+      const addedPrimary = addSettingsVariant(row, 0, true);
+      if (!addedPrimary) addSettingsVariant(row, 1, false);
+    } else {
+      const addedPrimary = addSettingsVariant(row, 1, true);
+      if (!addedPrimary) addSettingsVariant(row, 0, false);
     }
   }
 
@@ -146,47 +153,30 @@ function generatePurchaseOrders() {
 
   while (currentRowIndex < invData.length) {
     const firstRow = invData[currentRowIndex];
-    const locRaw = firstRow[0];
-    const nsidRaw = firstRow[1];
+    const nsidRaw = firstRow[INV_SKU_COL - 1];
 
     if (!nsidRaw) {
       currentRowIndex++;
       continue;
     }
 
-    const loc = String(locRaw).trim();
     const nsid = String(nsidRaw).trim();
-    const key = generateKey(loc, nsid);
 
     // Collect block rows
     const blockRows = [];
     while (currentRowIndex < invData.length) {
       const nextRow = invData[currentRowIndex];
-      const nextLoc = String(nextRow[0]).trim();
-      const nextNsid = String(nextRow[1]).trim();
+      const nextNsid = String(nextRow[INV_SKU_COL - 1]).trim();
 
       if (blockRows.length > 0 && nextNsid !== "") {
-        const skuChanged = nextNsid !== nsid;
-        const locChanged = nextLoc !== "" && loc !== "" && nextLoc !== loc;
-        if (skuChanged || (!SINGLE_LOCATION_MODE && locChanged)) break;
-      }
-      if (blockRows.length > 0 && nextNsid === "" && nextLoc !== "" && !SINGLE_LOCATION_MODE && loc !== "" && nextLoc !== loc) {
-        break;
+        if (nextNsid !== nsid) break;
       }
       blockRows.push(nextRow);
       currentRowIndex++;
     }
 
     scanStats.blocksScanned++;
-    let product;
-    if (SINGLE_LOCATION_MODE) {
-      product = settingsSkuMap.get(normalizeToken(nsid)) || settingsSkuLooseMap.get(normalizeCompact(nsid));
-    } else {
-      product = settingsMap.get(key) || settingsLooseMap.get(generateLooseKey(loc, nsid));
-      if (!product) {
-        product = settingsSkuMap.get(normalizeToken(nsid)) || settingsSkuLooseMap.get(normalizeCompact(nsid));
-      }
-    }
+    const product = settingsSkuMap.get(normalizeToken(nsid)) || settingsSkuLooseMap.get(normalizeCompact(nsid));
     if (!product) {
       scanStats.missingSettings++;
       continue;
@@ -194,22 +184,19 @@ function generatePurchaseOrders() {
     scanStats.matchedSettings++;
 
     // Find Logic Rows
-    let rowPredicted, rowInboundDue, rowInboundRec, rowForecast, rowTransfers, rowAdj;
+    let rowPredicted, rowInboundDue, rowInboundRec, rowForecast, rowTransfers, rowAdj, rowClosing;
     const clean = (s) => String(s).toLowerCase().replace(/[^a-z0-9]/g, "");
     const getLabel = (row) => {
-      for (let i = 0; i < LABEL_COL_CANDIDATES.length; i++) {
-        const zeroIdx = LABEL_COL_CANDIDATES[i] - 1;
-        const raw = row[zeroIdx];
-        if (String(raw || "").trim() !== "") return clean(raw);
-      }
-      return "";
+      const raw = row[INV_LABEL_COL - 1];
+      return clean(raw);
     };
 
     blockRows.forEach((row) => {
       const label = getLabel(row);
       if (!label) return;
 
-      if (!rowPredicted && (label.includes("predicted") || label.includes("closingstock") || label.includes("projectedclosing"))) {
+      const isStartingStock = label.includes("startingstock") && !label.includes("closingstock");
+      if (!rowPredicted && (label.includes("predictedstartingstock") || isStartingStock || label.includes("predicted"))) {
         rowPredicted = row;
       } else if (!rowInboundDue && ((label.includes("inbound") && label.includes("due")) || label.includes("dueinbound") || label.includes("openpo") || label.includes("onorder"))) {
         rowInboundDue = row;
@@ -221,8 +208,11 @@ function generatePurchaseOrders() {
         rowTransfers = row;
       } else if (!rowAdj && label.includes("adjust")) {
         rowAdj = row;
+      } else if (!rowClosing && label.includes("closingstock")) {
+        rowClosing = row;
       }
     });
+    if (!rowPredicted && rowClosing) rowPredicted = rowClosing;
 
     const zeroRow = new Array(invLastCol).fill(0);
     if (!rowInboundDue) rowInboundDue = zeroRow;
@@ -413,7 +403,7 @@ function generatePurchaseOrders() {
           }
 
           poRecommendations.push([
-            locRaw,
+            SINGLE_LOCATION_NAME,
             nsidRaw,
             product.skuName,
             orderWeekStr,
@@ -428,9 +418,9 @@ function generatePurchaseOrders() {
       }
 
       // Trace logging for specific SKU to debug
-      if (nsidRaw.includes("PK-11-00002")) {
+      if (String(nsidRaw).includes("PK-11-00002")) {
         traceData.push([
-          locRaw,
+          SINGLE_LOCATION_NAME,
           nsidRaw,
           thisWeekStr,
           colIndex + 1,
