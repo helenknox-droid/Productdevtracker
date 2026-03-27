@@ -43,7 +43,7 @@ function generatePurchaseOrders() {
   else projectionDebugSheet.clear();
   projectionDebugSheet.appendRow([
     "Location", "SKU", "Name", "Week",
-    "Start Stock", "Inbound (incl Rec PO)", "Outbound", "Adjustment",
+    "Start Stock", "Inbound Due", "Inbound Received", "Recommended Inbound Applied", "Inbound (incl Rec PO)", "Outbound", "Adjustment",
     "Closing Pre-Order", "Required Floor",
     "Service Deficit", "Frequency Deficit",
     "Qty Service", "Qty Frequency", "Qty Chosen",
@@ -298,7 +298,10 @@ function generatePurchaseOrders() {
       const thisWeekStr = weekHeaders[w];
       const colIndex = weekColMap.get(thisWeekStr);
 
-      const inbound = parseNum(rowInboundDue[colIndex]) + parseNum(rowInboundRec[colIndex]) + parseNum(recommendedInbound[w]);
+      const inboundDueVal = parseNum(rowInboundDue[colIndex]);
+      const inboundRecVal = parseNum(rowInboundRec[colIndex]);
+      const recInboundVal = parseNum(recommendedInbound[w]);
+      const inbound = inboundDueVal + inboundRecVal + recInboundVal;
       const outbound = parseNum(rowForecast[colIndex]) + parseNum(rowTransfers[colIndex]);
       const adj = parseNum(rowAdj[colIndex]);
 
@@ -320,6 +323,9 @@ function generatePurchaseOrders() {
       let arrivalStockNoPoForLog = 0;
       let arrivalHeadroomForLog = 0;
       let arrivalMaxCompliantQtyForLog = 0;
+      let inboundDueForLog = inboundDueVal;
+      let inboundRecForLog = inboundRecVal;
+      let recInboundForLog = recInboundVal;
       let commentsForLog = "";
 
       if (w >= earliestArrivalIndex) {
@@ -500,6 +506,9 @@ function generatePurchaseOrders() {
           product.skuName,
           thisWeekStr,
           Math.round(startStockForWeek),
+          inboundDueForLog,
+          inboundRecForLog,
+          recInboundForLog,
           inbound,
           outbound,
           adj,
