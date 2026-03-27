@@ -403,14 +403,12 @@ function generatePurchaseOrders() {
           }
 
           poRecommendations.push([
-            SINGLE_LOCATION_NAME,
             nsidRaw,
             product.skuName,
             orderWeekStr,
             qtyToOrder,
             arrivalWeekStr,
-            commentParts.join("; "),
-            product.moq
+            commentParts.join("; ")
           ]);
 
           weekClosing += qtyToOrder;
@@ -440,11 +438,11 @@ function generatePurchaseOrders() {
 
   // --- WRITE OUTPUT ---
   const lastRow = outputSheet.getLastRow();
-  if (lastRow > 1) outputSheet.getRange(2, 1, lastRow - 1, 8).clearContent();
+  if (lastRow > 1) outputSheet.getRange(2, 1, lastRow - 1, 6).clearContent();
 
   if (poRecommendations.length > 0) {
     poRecommendations.sort((a, b) => (a[3] < b[3] ? -1 : 1));
-    outputSheet.getRange(2, 1, poRecommendations.length, 8).setValues(poRecommendations);
+    outputSheet.getRange(2, 1, poRecommendations.length, 6).setValues(poRecommendations);
   }
 
   if (traceData.length > 0) {
