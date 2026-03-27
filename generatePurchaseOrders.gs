@@ -73,43 +73,33 @@ function generatePurchaseOrders() {
   const settingsSkuLooseMap = new Map();
 
   const settingsData = settingsSheet.getRange(3, 1, Math.max(0, settingsSheet.getLastRow() - 2), 13).getValues();
-  const layoutA = { sku: 0, name: 1, lead: 2, safety: 3, eol: 4, freq: 5, moq: 6, max: 7, type: 8, caseSize: 9, pallet: 10 };
-  const layoutB = { sku: 1, name: 2, lead: 3, safety: 4, eol: 5, freq: 6, moq: 7, max: 8, type: 9, caseSize: 10, pallet: 11 };
-  const scoreLayout = (row, layout) => {
-    let score = 0;
-    const skuRaw = row[layout.sku];
-    if (String(skuRaw || "").trim() !== "") score += 3;
-    if (String(row[layout.name] || "").trim() !== "") score += 1;
-    const lead = row[layout.lead];
-    if (typeof lead === "number" || !isNaN(Number(String(lead || "").replace(/[^0-9.-]/g, "")))) score += 1;
-    const type = normalizeToken(row[layout.type]);
-    if (type === "" || type === "case" || type === "unit") score += 1;
-    return score;
-  };
-  const buildProductConfig = (row, layout) => ({
-    skuName: row[layout.name],
-    leadTimeDays: Number(row[layout.lead]) || 0,
-    safetyStock: Number(row[layout.safety]) || 0,
-    lastWeekPlanned: row[layout.eol],
-    orderFreqDays: Number(row[layout.freq]) || 0,
-    moq: Number(row[layout.moq]) || 0,
-    maxStock: parseNum(row[layout.max]),
-    orderType: String(row[layout.type] || "").toLowerCase(),
-    caseSize: Number(row[layout.caseSize]) || 0,
-    unitsPerPallet: row[layout.pallet]
+  const buildProductConfig = (row, offset) => ({
+    skuName: row[offset + 1],
+    leadTimeDays: Number(row[offset + 2]) || 0,
+    safetyStock: Number(row[offset + 3]) || 0,
+    lastWeekPlanned: row[offset + 4],
+    orderFreqDays: Number(row[offset + 5]) || 0,
+    moq: Number(row[offset + 6]) || 0,
+    maxStock: parseNum(row[offset + 7]),
+    orderType: String(row[offset + 8] || "").toLowerCase(),
+    caseSize: Number(row[offset + 9]) || 0,
+    unitsPerPallet: row[offset + 10]
   });
-  for (let r = 0; r < settingsData.length; r++) {
-    const row = settingsData[r];
-    const aScore = scoreLayout(row, layoutA);
-    const bScore = scoreLayout(row, layoutB);
-    const chosen = bScore > aScore ? layoutB : layoutA;
-    const skuRaw = row[chosen.sku];
-    if (!skuRaw) continue;
+  const addSettingsVariant = (row, offset, overwrite) => {
+    const skuRaw = row[offset];
+    if (!skuRaw) return false;
     const sku = normalizeToken(skuRaw);
     const skuLoose = normalizeCompact(skuRaw);
-    const productConfig = buildProductConfig(row, chosen);
-    if (!settingsSkuMap.has(sku)) settingsSkuMap.set(sku, productConfig);
-    if (!settingsSkuLooseMap.has(skuLoose)) settingsSkuLooseMap.set(skuLoose, productConfig);
+    const productConfig = buildProductConfig(row, offset);
+    if (overwrite || !settingsSkuMap.has(sku)) settingsSkuMap.set(sku, productConfig);
+    if (overwrite || !settingsSkuLooseMap.has(skuLoose)) settingsSkuLooseMap.set(skuLoose, productConfig);
+    return true;
+  };
+  for (let r = 0; r < settingsData.length; r++) {
+    const row = settingsData[r];
+    // Stable AMV mapping: prefer SKU in col A, fallback to col B.
+    const addedPrimary = addSettingsVariant(row, 0, true);
+    if (!addedPrimary) addSettingsVariant(row, 1, false);
   }
 
   // --- 2) MAP WEEK HEADERS ---
