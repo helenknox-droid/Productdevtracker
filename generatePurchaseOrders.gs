@@ -16,7 +16,6 @@ function generatePurchaseOrders() {
 
   // --- CONFIGURATION ---
   const ARRIVAL_BUFFER_WEEKS = 1;
-  const MAX_GUARD_BAND_RATIO = 0.9; // Reduce frequency fill as projected stock approaches max.
   const SINGLE_LOCATION_NAME = "AMV DC";
   const DEBUG_TARGET_SKU_NAME = "box flower m"; // case-insensitive contains
 
@@ -416,31 +415,32 @@ function generatePurchaseOrders() {
           const baselinePeak = simulatePeak(w, weekClosing, 0, -1, horizonWeeks);
           const preferredPeak = simulatePeak(w, weekClosing, qtyForPreferredCoverage, plannedArrivalIndex, horizonWeeks);
           const servicePeak = simulatePeak(w, weekClosing, qtyForHardService, plannedArrivalIndex, horizonWeeks);
+          const preferredArrivalStock =
+            plannedArrivalIndex >= 0 ? arrivalStockNoPo + qtyForPreferredCoverage : weekClosing + qtyForPreferredCoverage;
+          const serviceArrivalStock =
+            plannedArrivalIndex >= 0 ? arrivalStockNoPo + qtyForHardService : weekClosing + qtyForHardService;
           baselinePeakForLog = baselinePeak;
           preferredPeakForLog = preferredPeak;
           servicePeakForLog = servicePeak;
 
-          if (
-            product.maxStock > 0 &&
-            qtyForPreferredCoverage > qtyForHardService &&
-            preferredPeak > product.maxStock * MAX_GUARD_BAND_RATIO
-          ) {
-            qtyToOrder = qtyForHardService;
-            strategy = `${strategy} (Max Guardrail)`;
-            commentParts.push("Frequency Sacrificed for Max");
-          }
+          if (product.maxStock > 0) {
+            const preferredBreachesMax = preferredArrivalStock > product.maxStock || preferredPeak > product.maxStock;
+            const serviceBreachesMax = serviceArrivalStock > product.maxStock || servicePeak > product.maxStock;
 
-          if (product.maxStock > 0 && preferredPeak > product.maxStock) {
-            if (servicePeak <= product.maxStock) {
+            // Trade-off should be max vs frequency (not service): drop to service when preferred breaches.
+            if (qtyForPreferredCoverage > qtyForHardService && preferredBreachesMax) {
               qtyToOrder = qtyForHardService;
-              strategy = `${strategy} (Soft Capped)`;
-              commentParts.push("Soft Capped to Max (Frequency Fill Reduced)");
-            } else {
+              strategy = `${strategy} (Frequency Sacrificed for Max)`;
+              commentParts.push("Frequency Sacrificed for Max");
+            }
+
+            if (serviceBreachesMax) {
               // Never sacrifice service floor. If service itself breaches max, keep service qty and annotate.
               qtyToOrder = qtyForHardService;
               const breachReasons = [];
               if (baselinePeak > product.maxStock) breachReasons.push("Baseline Over Max");
               if (hardServiceDeficit > arrivalHeadroom) breachReasons.push("Coverage");
+              if (serviceArrivalStock > product.maxStock) breachReasons.push("Arrival Stock");
               if (servicePeak > product.maxStock && hardServiceDeficit <= arrivalHeadroom) breachReasons.push("Projected Peak");
               if (product.orderType === "case" && product.caseSize > 0 && hardServiceDeficit <= arrivalHeadroom) {
                 const caseRounded = Math.ceil(Math.max(0, hardServiceDeficit) / product.caseSize) * product.caseSize;
@@ -457,12 +457,14 @@ function generatePurchaseOrders() {
           }
 
           const chosenPeak = simulatePeak(w, weekClosing, qtyToOrder, plannedArrivalIndex, horizonWeeks);
+          const chosenArrivalStock =
+            plannedArrivalIndex >= 0 ? arrivalStockNoPo + qtyToOrder : weekClosing + qtyToOrder;
           chosenPeakForLog = chosenPeak;
-          if (product.maxStock > 0 && chosenPeak > product.maxStock) {
+          if (product.maxStock > 0 && (chosenPeak > product.maxStock || chosenArrivalStock > product.maxStock)) {
             if (!commentParts.some((c) => c.startsWith("Max Capacity Breached"))) {
               commentParts.push("Max Capacity Breached");
             }
-            if (preferredPeak > product.maxStock && qtyToOrder === qtyForHardService) {
+            if ((preferredPeak > product.maxStock || preferredArrivalStock > product.maxStock) && qtyToOrder === qtyForHardService) {
               if (!commentParts.includes("Frequency Sacrificed for Max")) {
                 commentParts.push("Frequency Sacrificed for Max");
               }
