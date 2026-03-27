@@ -47,7 +47,8 @@ function generatePurchaseOrders() {
     "Closing Pre-Order", "Required Floor",
     "Service Deficit", "Frequency Deficit",
     "Qty Service", "Qty Frequency", "Qty Chosen",
-    "Arrival Week", "Baseline Peak", "Preferred Peak", "Service Peak", "Chosen Peak",
+    "Arrival Week", "Arrival Stock (No PO)", "Arrival Headroom", "Arrival Max-Compliant Qty",
+    "Baseline Peak", "Preferred Peak", "Service Peak", "Chosen Peak",
     "Max Stock", "Strategy", "Comments"
   ]);
 
@@ -314,6 +315,9 @@ function generatePurchaseOrders() {
       let preferredPeakForLog = 0;
       let servicePeakForLog = 0;
       let chosenPeakForLog = 0;
+      let arrivalStockNoPoForLog = 0;
+      let arrivalHeadroomForLog = 0;
+      let arrivalMaxCompliantQtyForLog = 0;
       let commentsForLog = "";
 
       if (w >= earliestArrivalIndex) {
@@ -378,12 +382,37 @@ function generatePurchaseOrders() {
           const plannedArrivalIndex = weekHeaders.indexOf(arrivalWeekStr);
           arrivalWeekForLog = arrivalWeekStr;
 
+          const simulateStockAtWeekNoPo = (startWeekIdx, preOrderClosing, targetWeekIdx) => {
+            let temp = preOrderClosing;
+            if (targetWeekIdx <= startWeekIdx) return temp;
+            for (let f = 1; f <= targetWeekIdx - startWeekIdx; f++) {
+              const idx = startWeekIdx + f;
+              if (idx >= weekHeaders.length) break;
+              const col = weekColMap.get(weekHeaders[idx]);
+              const inQty =
+                parseNum(rowInboundDue[col]) +
+                parseNum(rowInboundRec[col]) +
+                parseNum(recommendedInbound[idx]);
+              const outQty = parseNum(rowForecast[col]) + parseNum(rowTransfers[col]);
+              const aQty = parseNum(rowAdj[col]);
+              temp = temp + inQty - outQty + aQty;
+            }
+            return temp;
+          };
+          const arrivalStockNoPo =
+            plannedArrivalIndex >= 0 ? simulateStockAtWeekNoPo(w, weekClosing, plannedArrivalIndex) : weekClosing;
+          const arrivalHeadroom =
+            product.maxStock > 0 ? product.maxStock - arrivalStockNoPo : Number.POSITIVE_INFINITY;
+          const arrivalMaxCompliantQty = getMaxCompliantQty(arrivalHeadroom);
+          arrivalStockNoPoForLog = arrivalStockNoPo;
+          arrivalHeadroomForLog = arrivalHeadroom;
+          arrivalMaxCompliantQtyForLog = arrivalMaxCompliantQty;
+
           // Max-priority decisioning
           const horizonWeeks = weekHeaders.length - w;
           const baselinePeak = simulatePeak(w, weekClosing, 0, -1, horizonWeeks);
           const preferredPeak = simulatePeak(w, weekClosing, qtyForPreferredCoverage, plannedArrivalIndex, horizonWeeks);
           const servicePeak = simulatePeak(w, weekClosing, qtyForHardService, plannedArrivalIndex, horizonWeeks);
-          const maxHeadroom = product.maxStock > 0 ? product.maxStock - baselinePeak : Number.POSITIVE_INFINITY;
           baselinePeakForLog = baselinePeak;
           preferredPeakForLog = preferredPeak;
           servicePeakForLog = servicePeak;
@@ -394,7 +423,7 @@ function generatePurchaseOrders() {
               strategy = `${strategy} (Soft Capped)`;
               commentParts.push("Soft Capped to Max (Frequency Fill Reduced)");
             } else {
-              const maxCompliantQty = getMaxCompliantQty(maxHeadroom);
+              const maxCompliantQty = arrivalMaxCompliantQty;
               if (maxCompliantQty > 0) {
                 qtyToOrder = maxCompliantQty;
                 strategy = `${strategy} (Max-Priority Split)`;
@@ -404,20 +433,34 @@ function generatePurchaseOrders() {
                 qtyToOrder = qtyForHardService;
                 const breachReasons = [];
                 if (baselinePeak > product.maxStock) breachReasons.push("Baseline Over Max");
-                if (hardServiceDeficit > maxHeadroom) breachReasons.push("Coverage");
-                if (servicePeak > product.maxStock && hardServiceDeficit <= maxHeadroom) breachReasons.push("Projected Peak");
-                if (product.orderType === "case" && product.caseSize > 0 && hardServiceDeficit <= maxHeadroom) {
+                if (hardServiceDeficit > arrivalHeadroom) breachReasons.push("Coverage");
+                if (servicePeak > product.maxStock && hardServiceDeficit <= arrivalHeadroom) breachReasons.push("Projected Peak");
+                if (product.orderType === "case" && product.caseSize > 0 && hardServiceDeficit <= arrivalHeadroom) {
                   const caseRounded = Math.ceil(Math.max(0, hardServiceDeficit) / product.caseSize) * product.caseSize;
-                  if (caseRounded > maxHeadroom) breachReasons.push("Case Pack");
+                  if (caseRounded > arrivalHeadroom) breachReasons.push("Case Pack");
                 }
                 if (product.moq > 0) {
                   const moqRounded = applyOrderConstraints(product.moq);
-                  if (moqRounded > maxHeadroom) breachReasons.push("MOQ");
+                  if (moqRounded > arrivalHeadroom) breachReasons.push("MOQ");
                 }
                 const uniqueReasons = [...new Set(breachReasons)];
                 if (uniqueReasons.length > 0) commentParts.push(`Max Capacity Breached (Unavoidable: ${uniqueReasons.join(", ")})`);
                 else commentParts.push("Max Capacity Breached");
               }
+            }
+          }
+
+          // Hard guardrail: if arrival headroom can support a smaller order, cap to that to spread cadence.
+          if (
+            product.maxStock > 0 &&
+            arrivalMaxCompliantQty > 0 &&
+            qtyToOrder > arrivalMaxCompliantQty
+          ) {
+            qtyToOrder = arrivalMaxCompliantQty;
+            strategy = `${strategy} (Arrival-Max Capped)`;
+            if (!commentParts.includes("Max Prioritized (Split Order to Avoid Breach)")) {
+              commentParts.push("Max Prioritized (Arrival Capped for Higher Order Cadence)");
+              commentParts.push("Service Floor Deferred (Additional PO Likely)");
             }
           }
 
@@ -471,6 +514,9 @@ function generatePurchaseOrders() {
           Math.round(qtyPreferredForLog),
           Math.round(qtyToOrder),
           arrivalWeekForLog,
+          Math.round(arrivalStockNoPoForLog),
+          Math.round(arrivalHeadroomForLog),
+          Math.round(arrivalMaxCompliantQtyForLog),
           Math.round(baselinePeakForLog),
           Math.round(preferredPeakForLog),
           Math.round(servicePeakForLog),
@@ -514,7 +560,7 @@ function generatePurchaseOrders() {
     traceSheet.getRange(2, 1, traceData.length, 11).setValues(traceData);
   }
   if (projectionDebugData.length > 0) {
-    projectionDebugSheet.getRange(2, 1, projectionDebugData.length, 23).setValues(projectionDebugData);
+    projectionDebugSheet.getRange(2, 1, projectionDebugData.length, 26).setValues(projectionDebugData);
   }
 
   let completionMessage = `Generated ${poRecommendations.length} POs.`;
