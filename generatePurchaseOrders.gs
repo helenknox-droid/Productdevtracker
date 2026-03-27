@@ -7,6 +7,11 @@
  * Update: The weekly minimum floor now targets:
  *   Safety Stock + following week's demand
  * instead of Safety Stock alone.
+ *
+ * Update: Soft-cap optimizer for max stock:
+ *   1) Keep service floor as highest priority.
+ *   2) Try to reduce to a max-compliant quantity when possible.
+ *   3) If breach is unavoidable, still recommend and annotate why.
  */
 function generatePurchaseOrders() {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
@@ -196,6 +201,23 @@ function generatePurchaseOrders() {
       return safety + nextWeekDemand;
     };
 
+    const applyOrderConstraints = (rawQty) => {
+      let qty = Math.max(0, rawQty);
+      if (product.orderType === "case" && product.caseSize > 0) {
+        qty = Math.ceil(qty / product.caseSize) * product.caseSize;
+      } else {
+        qty = Math.ceil(qty);
+      }
+
+      if (qty < product.moq) {
+        qty = product.moq;
+        if (product.orderType === "case" && product.caseSize > 0) {
+          qty = Math.ceil(qty / product.caseSize) * product.caseSize;
+        }
+      }
+      return qty;
+    };
+
     // --- SIMULATION LOOP ---
     for (let w = simulationStartIndex; w < weekHeaders.length; w++) {
       const thisWeekStr = weekHeaders[w];
@@ -249,19 +271,47 @@ function generatePurchaseOrders() {
             }
           }
 
-          qtyToOrder = deficit;
+          const hardServiceDeficit = requiredFloor - weekClosing;
+          const preferredCoverageDeficit = deficit;
+          const qtyForHardService = applyOrderConstraints(hardServiceDeficit);
+          const qtyForPreferredCoverage = applyOrderConstraints(preferredCoverageDeficit);
 
-          // Case & MOQ Logic
-          if (product.orderType === "case" && product.caseSize > 0) {
-            qtyToOrder = Math.ceil(qtyToOrder / product.caseSize) * product.caseSize;
-          } else {
-            qtyToOrder = Math.ceil(qtyToOrder);
-          }
+          qtyToOrder = qtyForPreferredCoverage;
 
-          if (qtyToOrder < product.moq) {
-            qtyToOrder = product.moq;
-            if (product.orderType === "case" && product.caseSize > 0) {
-              qtyToOrder = Math.ceil(qtyToOrder / product.caseSize) * product.caseSize;
+          const commentParts = [];
+          const maxAllowedQty = product.maxStock > 0 ? product.maxStock - (startStockForWeek + inbound) : Number.POSITIVE_INFINITY;
+
+          if (isFinite(maxAllowedQty) && qtyForPreferredCoverage > maxAllowedQty) {
+            if (qtyForHardService <= maxAllowedQty) {
+              // Respect max by dialing back from frequency-fill to minimum service floor.
+              qtyToOrder = qtyForHardService;
+              strategy = `${strategy} (Soft Capped)`;
+              commentParts.push("Soft Capped to Max (Frequency Fill Reduced)");
+            } else {
+              // Max breach is unavoidable while still protecting service floor.
+              qtyToOrder = qtyForHardService;
+              const breachReasons = [];
+
+              if (hardServiceDeficit > maxAllowedQty) {
+                breachReasons.push("Coverage");
+              }
+
+              if (product.orderType === "case" && product.caseSize > 0 && hardServiceDeficit <= maxAllowedQty) {
+                const caseRounded = Math.ceil(Math.max(0, hardServiceDeficit) / product.caseSize) * product.caseSize;
+                if (caseRounded > maxAllowedQty) breachReasons.push("Case Pack");
+              }
+
+              if (product.moq > 0) {
+                const moqRounded = applyOrderConstraints(product.moq);
+                if (moqRounded > maxAllowedQty) breachReasons.push("MOQ");
+              }
+
+              const uniqueReasons = [...new Set(breachReasons)];
+              if (uniqueReasons.length > 0) {
+                commentParts.push(`Max Capacity Breached (Unavoidable: ${uniqueReasons.join(", ")})`);
+              } else {
+                commentParts.push("Max Capacity Breached");
+              }
             }
           }
 
@@ -283,9 +333,12 @@ function generatePurchaseOrders() {
 
           const arrivalWeekStr = getIsoWeekString(bufferedArrivalDate);
 
-          const commentParts = [];
           const potentialPeakStock = startStockForWeek + inbound + qtyToOrder;
-          if (product.maxStock > 0 && potentialPeakStock > product.maxStock) {
+          if (
+            product.maxStock > 0 &&
+            potentialPeakStock > product.maxStock &&
+            !commentParts.some((c) => c.startsWith("Max Capacity Breached"))
+          ) {
             commentParts.push("Max Capacity Breached");
           }
 
