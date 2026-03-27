@@ -18,6 +18,11 @@ function generatePurchaseOrders() {
 
   // --- CONFIGURATION ---
   const ARRIVAL_BUFFER_WEEKS = 2; // Stock must arrive this many weeks BEFORE the shortage
+  const INV_HEADER_ROW = 6;
+  const INV_DATA_START_ROW = 7;
+  const CURRENT_WEEK_CELL = "B2";
+  // 1-based column candidates where row labels may live in planner blocks (D, C, E).
+  const LABEL_COL_CANDIDATES = [4, 3, 5];
 
   // --- SHEETS ---
   const settingsSheet = ss.getSheetByName("📋 Product Settings");
@@ -39,7 +44,11 @@ function generatePurchaseOrders() {
 
   // --- 1. READ SETTINGS ---
   const settingsMap = new Map();
-  const generateKey = (loc, sku) => `${String(loc).trim().toLowerCase()}_${String(sku).trim().toLowerCase()}`;
+  const settingsLooseMap = new Map();
+  const normalizeToken = (val) => String(val || "").trim().toLowerCase();
+  const normalizeCompact = (val) => normalizeToken(val).replace(/[^a-z0-9]/g, "");
+  const generateKey = (loc, sku) => `${normalizeToken(loc)}_${normalizeToken(sku)}`;
+  const generateLooseKey = (loc, sku) => `${normalizeCompact(loc)}_${normalizeCompact(sku)}`;
   const parseNum = (val) => {
     if (typeof val === "number") return val;
     if (!val) return 0;
@@ -54,7 +63,7 @@ function generatePurchaseOrders() {
     const loc = row[0];
     const nsid = row[1];
     if (loc && nsid) {
-      settingsMap.set(generateKey(loc, nsid), {
+      const productConfig = {
         skuName: row[2],
         leadTimeDays: Number(row[3]) || 0,
         safetyStock: Number(row[4]) || 0,
@@ -65,14 +74,17 @@ function generatePurchaseOrders() {
         orderType: String(row[9]).toLowerCase(),
         caseSize: Number(row[10]) || 0,
         unitsPerPallet: row[11]
-      });
+      };
+      settingsMap.set(generateKey(loc, nsid), productConfig);
+      const looseKey = generateLooseKey(loc, nsid);
+      if (!settingsLooseMap.has(looseKey)) settingsLooseMap.set(looseKey, productConfig);
     }
   }
 
   // --- 2. MAP HEADERS ---
   const invLastRow = invSheet.getLastRow();
   const invLastCol = invSheet.getLastColumn();
-  const headerRowVals = invSheet.getRange(6, 1, 1, invLastCol).getValues()[0];
+  const headerRowVals = invSheet.getRange(INV_HEADER_ROW, 1, 1, invLastCol).getValues()[0];
   const weekColMap = new Map();
   const weekHeaders = [];
   const weekRegex = /^\d{4}-W\d{2}$/;
@@ -94,7 +106,7 @@ function generatePurchaseOrders() {
 
   const weekDates = weekHeaders.map((w) => getDateFromIsoWeek(w));
 
-  let currentWeekStr = invSheet.getRange("B2").getValue();
+  let currentWeekStr = invSheet.getRange(CURRENT_WEEK_CELL).getValue();
   if (!currentWeekStr || typeof currentWeekStr !== "string") currentWeekStr = getIsoWeekString(new Date());
 
   const currentWeekIndex = weekHeaders.indexOf(currentWeekStr);
@@ -110,11 +122,19 @@ function generatePurchaseOrders() {
   }
 
   const currentDateObj = getDateFromIsoWeek(currentWeekStr);
-  const invData = invSheet.getRange(7, 1, invLastRow - 6, invLastCol).getValues();
+  const invData = invSheet.getRange(INV_DATA_START_ROW, 1, invLastRow - (INV_DATA_START_ROW - 1), invLastCol).getValues();
 
   // --- 3. DYNAMIC SCANNING ---
   const poRecommendations = [];
   const traceData = [];
+  const scanStats = {
+    blocksScanned: 0,
+    matchedSettings: 0,
+    missingSettings: 0,
+    missingPredictedRow: 0,
+    triggerChecks: 0,
+    orderTriggers: 0
+  };
   let currentRowIndex = 0;
 
   while (currentRowIndex < invData.length) {
@@ -145,21 +165,46 @@ function generatePurchaseOrders() {
       currentRowIndex++;
     }
 
-    const product = settingsMap.get(key);
-    if (!product) continue;
+    scanStats.blocksScanned++;
+    let product = settingsMap.get(key);
+    if (!product) {
+      product = settingsLooseMap.get(generateLooseKey(loc, nsid));
+    }
+    if (!product) {
+      scanStats.missingSettings++;
+      continue;
+    }
+    scanStats.matchedSettings++;
 
     // Find Logic Rows
     let rowPredicted, rowInboundDue, rowInboundRec, rowForecast, rowTransfers, rowAdj;
     const clean = (s) => String(s).toLowerCase().replace(/[^a-z0-9]/g, "");
+    const getLabel = (row) => {
+      for (let i = 0; i < LABEL_COL_CANDIDATES.length; i++) {
+        const zeroIdx = LABEL_COL_CANDIDATES[i] - 1;
+        const raw = row[zeroIdx];
+        if (String(raw || "").trim() !== "") return clean(raw);
+      }
+      return "";
+    };
 
     blockRows.forEach((row) => {
-      const label = clean(row[3]);
-      if (label.includes("predicted")) rowPredicted = row;
-      else if (label.includes("inbounddue")) rowInboundDue = row;
-      else if (label.includes("inboundreceived")) rowInboundRec = row;
-      else if (label.includes("forecasted")) rowForecast = row;
-      else if (label.includes("transfers")) rowTransfers = row;
-      else if (label.includes("adjustment")) rowAdj = row;
+      const label = getLabel(row);
+      if (!label) return;
+
+      if (!rowPredicted && (label.includes("predicted") || label.includes("closingstock") || label.includes("projectedclosing"))) {
+        rowPredicted = row;
+      } else if (!rowInboundDue && ((label.includes("inbound") && label.includes("due")) || label.includes("dueinbound") || label.includes("openpo") || label.includes("onorder"))) {
+        rowInboundDue = row;
+      } else if (!rowInboundRec && ((label.includes("inbound") && label.includes("received")) || label.includes("inboundreceived") || label === "received")) {
+        rowInboundRec = row;
+      } else if (!rowForecast && label.includes("forecast")) {
+        rowForecast = row;
+      } else if (!rowTransfers && label.includes("transfer")) {
+        rowTransfers = row;
+      } else if (!rowAdj && label.includes("adjust")) {
+        rowAdj = row;
+      }
     });
 
     const zeroRow = new Array(invLastCol).fill(0);
@@ -172,9 +217,15 @@ function generatePurchaseOrders() {
     // Initialize Ledger
     const startWeekHeader = weekHeaders[simulationStartIndex];
     const startCol = weekColMap.get(startWeekHeader);
-    const rawPred = rowPredicted ? rowPredicted[startCol] : "";
-
-    if (String(rawPred).trim() === "") continue;
+    let rawPred = rowPredicted ? rowPredicted[startCol] : "";
+    if (String(rawPred).trim() === "" && rowPredicted) {
+      const currentCol = weekColMap.get(currentWeekStr);
+      if (currentCol !== undefined) rawPred = rowPredicted[currentCol];
+    }
+    if (String(rawPred).trim() === "") {
+      scanStats.missingPredictedRow++;
+      continue;
+    }
 
     let runningInventory = parseNum(rawPred);
 
@@ -234,10 +285,12 @@ function generatePurchaseOrders() {
       let strategy = "";
 
       if (w >= earliestArrivalIndex) {
+        scanStats.triggerChecks++;
         // Trigger condition now uses Safety + following week's demand.
         const requiredFloor = getRequiredFloorForWeek(w);
 
         if (weekClosing < requiredFloor) {
+          scanStats.orderTriggers++;
           // 1) Immediate weekly survival floor (with next-week cover)
           deficit = requiredFloor - weekClosing;
           strategy = "Survival + Next Week Cover";
@@ -391,7 +444,11 @@ function generatePurchaseOrders() {
     traceSheet.getRange(2, 1, traceData.length, 11).setValues(traceData);
   }
 
-  SpreadsheetApp.getUi().alert(`Generated ${poRecommendations.length} POs.`);
+  let completionMessage = `Generated ${poRecommendations.length} POs.`;
+  if (poRecommendations.length === 0) {
+    completionMessage += `\nDebug summary: blocks=${scanStats.blocksScanned}, matched settings=${scanStats.matchedSettings}, missing settings=${scanStats.missingSettings}, missing predicted row=${scanStats.missingPredictedRow}, trigger checks=${scanStats.triggerChecks}, order triggers=${scanStats.orderTriggers}.`;
+  }
+  SpreadsheetApp.getUi().alert(completionMessage);
 }
 
 // --- HELPER FUNCTIONS ---
