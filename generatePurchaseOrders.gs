@@ -43,7 +43,7 @@ function generatePurchaseOrders() {
   else projectionDebugSheet.clear();
   projectionDebugSheet.appendRow([
     "Location", "SKU", "Name", "Week",
-    "Start Stock", "Inbound Due", "Inbound Received", "Recommended Inbound Applied", "Inbound (incl Rec PO)", "Outbound", "Adjustment",
+    "Start Stock", "Inbound Due", "Inbound Received", "Recommended Inbound Applied", "Recommended Applied Same Week", "Inbound (incl Rec PO)", "Outbound", "Adjustment",
     "Closing Pre-Order", "Required Floor",
     "Service Deficit", "Frequency Deficit",
     "Qty Service", "Qty Frequency", "Qty Chosen",
@@ -181,14 +181,29 @@ function generatePurchaseOrders() {
 
     // Identify logic rows from label column C.
     let rowPredicted, rowInboundDue, rowInboundRec, rowForecast, rowTransfers, rowAdj, rowClosing;
-    const getLabel = (row) => clean(row[INV_LABEL_COL - 1]);
+    const labelColCandidates = [...new Set([INV_LABEL_COL - 1, 3])].filter((i) => i >= 0 && i <= 3);
+    const getLabel = (row) => {
+      for (let i = 0; i < labelColCandidates.length; i++) {
+        const raw = row[labelColCandidates[i]];
+        if (String(raw || "").trim() !== "") return clean(raw);
+      }
+      return "";
+    };
     blockRows.forEach((row) => {
       const label = getLabel(row);
       if (!label) return;
       const isStartingStock = label.includes("startingstock") && !label.includes("closingstock");
       if (!rowPredicted && (label.includes("predictedstartingstock") || isStartingStock || label.includes("predicted"))) {
         rowPredicted = row;
-      } else if (!rowInboundDue && ((label.includes("inbound") && label.includes("due")) || label.includes("dueinbound") || label.includes("openpo") || label.includes("onorder"))) {
+      } else if (!rowInboundDue && (
+        label.includes("inbounddue") ||
+        label.includes("dueinbound") ||
+        label.includes("openpo") ||
+        label.includes("onorder") ||
+        label.includes("podue") ||
+        label.includes("inboundpo") ||
+        (label.includes("inbound") && label.includes("due"))
+      )) {
         rowInboundDue = row;
       } else if (!rowInboundRec && ((label.includes("inbound") && label.includes("received")) || label.includes("inboundreceived") || label === "received")) {
         rowInboundRec = row;
@@ -326,6 +341,7 @@ function generatePurchaseOrders() {
       let inboundDueForLog = inboundDueVal;
       let inboundRecForLog = inboundRecVal;
       let recInboundForLog = recInboundVal;
+      let recAppliedSameWeekForLog = 0;
       let commentsForLog = "";
 
       if (w >= earliestArrivalIndex) {
@@ -493,6 +509,7 @@ function generatePurchaseOrders() {
             commentParts.push("Arrival Beyond Planning Horizon");
           } else if (plannedArrivalIndex <= w) {
             weekClosing += qtyToOrder;
+            recAppliedSameWeekForLog = qtyToOrder;
           } else {
             recommendedInbound[plannedArrivalIndex] += qtyToOrder;
           }
@@ -509,6 +526,7 @@ function generatePurchaseOrders() {
           inboundDueForLog,
           inboundRecForLog,
           recInboundForLog,
+          recAppliedSameWeekForLog,
           inbound,
           outbound,
           adj,
