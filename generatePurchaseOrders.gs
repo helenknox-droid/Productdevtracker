@@ -44,7 +44,7 @@ function generatePurchaseOrders() {
   projectionDebugSheet.appendRow([
     "Location", "SKU", "Name", "Week",
     "Start Stock", "Inbound Due", "Inbound Received", "Recommended Inbound Applied", "Recommended Applied Same Week", "Inbound (incl Rec PO)", "Outbound", "Adjustment",
-    "Closing Pre-Order", "Required Floor",
+    "Closing Pre-Order", "Closing Post-Order", "Required Floor",
     "Service Deficit", "Frequency Deficit",
     "Qty Service", "Qty Frequency", "Qty Chosen",
     "Arrival Week", "Arrival Stock (No PO)", "Arrival Headroom", "Arrival Max-Compliant Qty",
@@ -322,6 +322,7 @@ function generatePurchaseOrders() {
 
       const startStockForWeek = runningInventory;
       let weekClosing = runningInventory + inbound - outbound + adj;
+      const closingPreOrderForLog = weekClosing;
       let qtyToOrder = 0;
       let deficit = 0;
       let strategy = "";
@@ -338,6 +339,7 @@ function generatePurchaseOrders() {
       let arrivalStockNoPoForLog = 0;
       let arrivalHeadroomForLog = 0;
       let arrivalMaxCompliantQtyForLog = 0;
+      let closingPostOrderForLog = weekClosing;
       let inboundDueForLog = inboundDueVal;
       let inboundRecForLog = inboundRecVal;
       let recInboundForLog = recInboundVal;
@@ -513,6 +515,7 @@ function generatePurchaseOrders() {
           } else {
             recommendedInbound[plannedArrivalIndex] += qtyToOrder;
           }
+          closingPostOrderForLog = weekClosing;
         }
       }
 
@@ -530,7 +533,8 @@ function generatePurchaseOrders() {
           inbound,
           outbound,
           adj,
-          Math.round(weekClosing),
+          Math.round(closingPreOrderForLog),
+          Math.round(closingPostOrderForLog),
           Math.round(requiredFloorForLog),
           Math.round(hardServiceDeficitForLog),
           Math.round(preferredDeficitForLog),
@@ -584,7 +588,7 @@ function generatePurchaseOrders() {
     traceSheet.getRange(2, 1, traceData.length, 11).setValues(traceData);
   }
   if (projectionDebugData.length > 0) {
-    projectionDebugSheet.getRange(2, 1, projectionDebugData.length, 30).setValues(projectionDebugData);
+    projectionDebugSheet.getRange(2, 1, projectionDebugData.length, 31).setValues(projectionDebugData);
   }
 
   let completionMessage = `Generated ${poRecommendations.length} POs.`;
