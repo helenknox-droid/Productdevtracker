@@ -73,18 +73,35 @@ function generatePurchaseOrders() {
   const settingsSkuLooseMap = new Map();
 
   const settingsData = settingsSheet.getRange(3, 1, Math.max(0, settingsSheet.getLastRow() - 2), 13).getValues();
-  const buildProductConfig = (row, offset) => ({
-    skuName: row[offset + 1],
-    leadTimeDays: Number(row[offset + 2]) || 0,
-    safetyStock: Number(row[offset + 3]) || 0,
-    lastWeekPlanned: row[offset + 4],
-    orderFreqDays: Number(row[offset + 5]) || 0,
-    moq: Number(row[offset + 6]) || 0,
-    maxStock: parseNum(row[offset + 7]),
-    orderType: String(row[offset + 8] || "").toLowerCase(),
-    caseSize: Number(row[offset + 9]) || 0,
-    unitsPerPallet: row[offset + 10]
-  });
+  const buildProductConfig = (row, offset) => {
+    // Some AMV variants place an extra numeric field before Max Stock.
+    // Detect order type position and infer max as the column immediately before it.
+    const typeCandidates = [offset + 8, offset + 9, offset + 10, offset + 11];
+    let typeIdx = offset + 8;
+    for (let i = 0; i < typeCandidates.length; i++) {
+      const idx = typeCandidates[i];
+      const typeVal = normalizeToken(row[idx]);
+      if (typeVal === "unit" || typeVal === "case") {
+        typeIdx = idx;
+        break;
+      }
+    }
+    const maxIdx = Math.max(offset + 7, typeIdx - 1);
+    const caseIdx = typeIdx + 1;
+    const palletIdx = typeIdx + 2;
+    return {
+      skuName: row[offset + 1],
+      leadTimeDays: Number(row[offset + 2]) || 0,
+      safetyStock: Number(row[offset + 3]) || 0,
+      lastWeekPlanned: row[offset + 4],
+      orderFreqDays: Number(row[offset + 5]) || 0,
+      moq: Number(row[offset + 6]) || 0,
+      maxStock: parseNum(row[maxIdx]),
+      orderType: String(row[typeIdx] || "").toLowerCase(),
+      caseSize: Number(row[caseIdx]) || 0,
+      unitsPerPallet: row[palletIdx]
+    };
+  };
   const addSettingsVariant = (row, offset, overwrite) => {
     const skuRaw = row[offset];
     if (!skuRaw) return false;
