@@ -17,7 +17,7 @@ function generatePurchaseOrders() {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
 
   // --- CONFIGURATION ---
-  const ARRIVAL_BUFFER_WEEKS = 2; // Stock must arrive this many weeks BEFORE the shortage
+  const ARRIVAL_BUFFER_WEEKS = 1; // Stock must arrive this many weeks BEFORE the shortage
   const SINGLE_LOCATION_MODE = true; // This planner serves one DC/location; match settings primarily by SKU.
   const SINGLE_LOCATION_NAME = "AMV DC";
   const INV_HEADER_ROW = 6;
@@ -399,10 +399,13 @@ function generatePurchaseOrders() {
           const orderWeekStr = getIsoWeekString(orderDate);
           const arrivalWeekStr = getIsoWeekString(plannedArrivalDate);
 
-          const potentialPeakStock = startStockForWeek + inbound + qtyToOrder;
+          // Flag max breaches using both "arrival peak" and modeled post-order closing.
+          const arrivalPeakStock = startStockForWeek + inbound + qtyToOrder;
+          const postOrderClosingStock = weekClosing + qtyToOrder;
+          const modeledMaxPoint = Math.max(arrivalPeakStock, postOrderClosingStock);
           if (
             product.maxStock > 0 &&
-            potentialPeakStock > product.maxStock &&
+            modeledMaxPoint > product.maxStock &&
             !commentParts.some((c) => c.startsWith("Max Capacity Breached"))
           ) {
             commentParts.push("Max Capacity Breached");
