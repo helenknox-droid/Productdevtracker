@@ -423,44 +423,23 @@ function generatePurchaseOrders() {
               strategy = `${strategy} (Soft Capped)`;
               commentParts.push("Soft Capped to Max (Frequency Fill Reduced)");
             } else {
-              const maxCompliantQty = arrivalMaxCompliantQty;
-              if (maxCompliantQty > 0) {
-                qtyToOrder = maxCompliantQty;
-                strategy = `${strategy} (Max-Priority Split)`;
-                commentParts.push("Max Prioritized (Split Order to Avoid Breach)");
-                commentParts.push("Service Floor Deferred (Additional PO Likely)");
-              } else {
-                qtyToOrder = qtyForHardService;
-                const breachReasons = [];
-                if (baselinePeak > product.maxStock) breachReasons.push("Baseline Over Max");
-                if (hardServiceDeficit > arrivalHeadroom) breachReasons.push("Coverage");
-                if (servicePeak > product.maxStock && hardServiceDeficit <= arrivalHeadroom) breachReasons.push("Projected Peak");
-                if (product.orderType === "case" && product.caseSize > 0 && hardServiceDeficit <= arrivalHeadroom) {
-                  const caseRounded = Math.ceil(Math.max(0, hardServiceDeficit) / product.caseSize) * product.caseSize;
-                  if (caseRounded > arrivalHeadroom) breachReasons.push("Case Pack");
-                }
-                if (product.moq > 0) {
-                  const moqRounded = applyOrderConstraints(product.moq);
-                  if (moqRounded > arrivalHeadroom) breachReasons.push("MOQ");
-                }
-                const uniqueReasons = [...new Set(breachReasons)];
-                if (uniqueReasons.length > 0) commentParts.push(`Max Capacity Breached (Unavoidable: ${uniqueReasons.join(", ")})`);
-                else commentParts.push("Max Capacity Breached");
+              // Never sacrifice service floor. If service itself breaches max, keep service qty and annotate.
+              qtyToOrder = qtyForHardService;
+              const breachReasons = [];
+              if (baselinePeak > product.maxStock) breachReasons.push("Baseline Over Max");
+              if (hardServiceDeficit > arrivalHeadroom) breachReasons.push("Coverage");
+              if (servicePeak > product.maxStock && hardServiceDeficit <= arrivalHeadroom) breachReasons.push("Projected Peak");
+              if (product.orderType === "case" && product.caseSize > 0 && hardServiceDeficit <= arrivalHeadroom) {
+                const caseRounded = Math.ceil(Math.max(0, hardServiceDeficit) / product.caseSize) * product.caseSize;
+                if (caseRounded > arrivalHeadroom) breachReasons.push("Case Pack");
               }
-            }
-          }
-
-          // Hard guardrail: if arrival headroom can support a smaller order, cap to that to spread cadence.
-          if (
-            product.maxStock > 0 &&
-            arrivalMaxCompliantQty > 0 &&
-            qtyToOrder > arrivalMaxCompliantQty
-          ) {
-            qtyToOrder = arrivalMaxCompliantQty;
-            strategy = `${strategy} (Arrival-Max Capped)`;
-            if (!commentParts.includes("Max Prioritized (Split Order to Avoid Breach)")) {
-              commentParts.push("Max Prioritized (Arrival Capped for Higher Order Cadence)");
-              commentParts.push("Service Floor Deferred (Additional PO Likely)");
+              if (product.moq > 0) {
+                const moqRounded = applyOrderConstraints(product.moq);
+                if (moqRounded > arrivalHeadroom) breachReasons.push("MOQ");
+              }
+              const uniqueReasons = [...new Set(breachReasons)];
+              if (uniqueReasons.length > 0) commentParts.push(`Max Capacity Breached (Unavoidable: ${uniqueReasons.join(", ")})`);
+              else commentParts.push("Max Capacity Breached");
             }
           }
 
