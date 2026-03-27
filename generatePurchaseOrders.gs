@@ -566,7 +566,7 @@ function generatePurchaseOrders() {
     traceSheet.getRange(2, 1, traceData.length, 11).setValues(traceData);
   }
   if (projectionDebugData.length > 0) {
-    projectionDebugSheet.getRange(2, 1, projectionDebugData.length, 26).setValues(projectionDebugData);
+    projectionDebugSheet.getRange(2, 1, projectionDebugData.length, 29).setValues(projectionDebugData);
   }
 
   let completionMessage = `Generated ${poRecommendations.length} POs.`;
