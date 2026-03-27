@@ -276,6 +276,20 @@ function generatePurchaseOrders() {
       return qty;
     };
 
+    // Max-compliant quantity (round down so we do not exceed max cap).
+    const getMaxCompliantQty = (maxAllowedQty) => {
+      if (!isFinite(maxAllowedQty) || maxAllowedQty <= 0) return 0;
+      let qty;
+      if (product.orderType === "case" && product.caseSize > 0) {
+        qty = Math.floor(maxAllowedQty / product.caseSize) * product.caseSize;
+      } else {
+        qty = Math.floor(maxAllowedQty);
+      }
+      if (qty <= 0) return 0;
+      if (product.moq > 0 && qty < product.moq) return 0;
+      return qty;
+    };
+
     // Simulate projected stock over this order cycle after injecting an order now.
     const simulateCyclePeakStock = (weekIndex, preOrderClosing, orderQty, cycleWeeks) => {
       let tempRunning = preOrderClosing + orderQty;
@@ -376,32 +390,41 @@ function generatePurchaseOrders() {
               strategy = `${strategy} (Soft Capped)`;
               commentParts.push("Soft Capped to Max (Frequency Fill Reduced)");
             } else {
-              // Max breach is unavoidable while still protecting service floor.
-              qtyToOrder = qtyForHardService;
-              const breachReasons = [];
-
-              if (hardServiceDeficit > maxAllowedQty) {
-                breachReasons.push("Coverage");
-              }
-              if (serviceMaxPoint > product.maxStock && hardServiceDeficit <= maxAllowedQty) {
-                breachReasons.push("Projected Peak");
-              }
-
-              if (product.orderType === "case" && product.caseSize > 0 && hardServiceDeficit <= maxAllowedQty) {
-                const caseRounded = Math.ceil(Math.max(0, hardServiceDeficit) / product.caseSize) * product.caseSize;
-                if (caseRounded > maxAllowedQty) breachReasons.push("Case Pack");
-              }
-
-              if (product.moq > 0) {
-                const moqRounded = applyOrderConstraints(product.moq);
-                if (moqRounded > maxAllowedQty) breachReasons.push("MOQ");
-              }
-
-              const uniqueReasons = [...new Set(breachReasons)];
-              if (uniqueReasons.length > 0) {
-                commentParts.push(`Max Capacity Breached (Unavoidable: ${uniqueReasons.join(", ")})`);
+              // If possible, split orders and prioritize staying under max.
+              const maxCompliantQty = getMaxCompliantQty(maxAllowedQty);
+              if (maxCompliantQty > 0) {
+                qtyToOrder = maxCompliantQty;
+                strategy = `${strategy} (Max-Priority Split)`;
+                commentParts.push("Max Prioritized (Split Order to Avoid Breach)");
+                commentParts.push("Service Floor Deferred (Additional PO Likely)");
               } else {
-                commentParts.push("Max Capacity Breached");
+                // Max breach is unavoidable while still protecting service floor.
+                qtyToOrder = qtyForHardService;
+                const breachReasons = [];
+
+                if (hardServiceDeficit > maxAllowedQty) {
+                  breachReasons.push("Coverage");
+                }
+                if (serviceMaxPoint > product.maxStock && hardServiceDeficit <= maxAllowedQty) {
+                  breachReasons.push("Projected Peak");
+                }
+
+                if (product.orderType === "case" && product.caseSize > 0 && hardServiceDeficit <= maxAllowedQty) {
+                  const caseRounded = Math.ceil(Math.max(0, hardServiceDeficit) / product.caseSize) * product.caseSize;
+                  if (caseRounded > maxAllowedQty) breachReasons.push("Case Pack");
+                }
+
+                if (product.moq > 0) {
+                  const moqRounded = applyOrderConstraints(product.moq);
+                  if (moqRounded > maxAllowedQty) breachReasons.push("MOQ");
+                }
+
+                const uniqueReasons = [...new Set(breachReasons)];
+                if (uniqueReasons.length > 0) {
+                  commentParts.push(`Max Capacity Breached (Unavoidable: ${uniqueReasons.join(", ")})`);
+                } else {
+                  commentParts.push("Max Capacity Breached");
+                }
               }
             }
           }
