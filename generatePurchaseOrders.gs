@@ -16,6 +16,7 @@ function generatePurchaseOrders() {
 
   // --- CONFIGURATION ---
   const ARRIVAL_BUFFER_WEEKS = 1;
+  const MAX_GUARD_BAND_RATIO = 0.9; // Reduce frequency fill as projected stock approaches max.
   const SINGLE_LOCATION_NAME = "AMV DC";
   const DEBUG_TARGET_SKU_NAME = "box flower m"; // case-insensitive contains
 
@@ -419,6 +420,16 @@ function generatePurchaseOrders() {
           preferredPeakForLog = preferredPeak;
           servicePeakForLog = servicePeak;
 
+          if (
+            product.maxStock > 0 &&
+            qtyForPreferredCoverage > qtyForHardService &&
+            preferredPeak > product.maxStock * MAX_GUARD_BAND_RATIO
+          ) {
+            qtyToOrder = qtyForHardService;
+            strategy = `${strategy} (Max Guardrail)`;
+            commentParts.push("Frequency Sacrificed for Max");
+          }
+
           if (product.maxStock > 0 && preferredPeak > product.maxStock) {
             if (servicePeak <= product.maxStock) {
               qtyToOrder = qtyForHardService;
@@ -447,12 +458,15 @@ function generatePurchaseOrders() {
 
           const chosenPeak = simulatePeak(w, weekClosing, qtyToOrder, plannedArrivalIndex, horizonWeeks);
           chosenPeakForLog = chosenPeak;
-          if (
-            product.maxStock > 0 &&
-            chosenPeak > product.maxStock &&
-            !commentParts.some((c) => c.startsWith("Max Capacity Breached"))
-          ) {
-            commentParts.push("Max Capacity Breached");
+          if (product.maxStock > 0 && chosenPeak > product.maxStock) {
+            if (!commentParts.some((c) => c.startsWith("Max Capacity Breached"))) {
+              commentParts.push("Max Capacity Breached");
+            }
+            if (preferredPeak > product.maxStock && qtyToOrder === qtyForHardService) {
+              if (!commentParts.includes("Frequency Sacrificed for Max")) {
+                commentParts.push("Frequency Sacrificed for Max");
+              }
+            }
           }
 
           commentsForLog = commentParts.join("; ");
