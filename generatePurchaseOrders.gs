@@ -371,16 +371,11 @@ function generatePurchaseOrders() {
           qtyToOrder = qtyForPreferredCoverage;
 
           const commentParts = [];
-          const maxAllowedQty = product.maxStock > 0 ? product.maxStock - (startStockForWeek + inbound) : Number.POSITIVE_INFINITY;
-          const cycleWeeks = Math.max(1, freqWeeksToCover);
-          const preferredMaxPoint = Math.max(
-            startStockForWeek + inbound + qtyForPreferredCoverage,
-            simulateCyclePeakStock(w, weekClosing, qtyForPreferredCoverage, cycleWeeks)
-          );
-          const serviceMaxPoint = Math.max(
-            startStockForWeek + inbound + qtyForHardService,
-            simulateCyclePeakStock(w, weekClosing, qtyForHardService, cycleWeeks)
-          );
+          const maxRiskWeeks = weekHeaders.length - w; // check max risk across remaining horizon
+          const baselinePeak = simulateCyclePeakStock(w, weekClosing, 0, maxRiskWeeks);
+          const preferredMaxPoint = baselinePeak + qtyForPreferredCoverage;
+          const serviceMaxPoint = baselinePeak + qtyForHardService;
+          const maxHeadroom = product.maxStock > 0 ? product.maxStock - baselinePeak : Number.POSITIVE_INFINITY;
 
           // Prioritize avoiding max breaches over ideal frequency whenever possible.
           if (product.maxStock > 0 && preferredMaxPoint > product.maxStock) {
@@ -391,7 +386,7 @@ function generatePurchaseOrders() {
               commentParts.push("Soft Capped to Max (Frequency Fill Reduced)");
             } else {
               // If possible, split orders and prioritize staying under max.
-              const maxCompliantQty = getMaxCompliantQty(maxAllowedQty);
+              const maxCompliantQty = getMaxCompliantQty(maxHeadroom);
               if (maxCompliantQty > 0) {
                 qtyToOrder = maxCompliantQty;
                 strategy = `${strategy} (Max-Priority Split)`;
@@ -402,21 +397,24 @@ function generatePurchaseOrders() {
                 qtyToOrder = qtyForHardService;
                 const breachReasons = [];
 
-                if (hardServiceDeficit > maxAllowedQty) {
+                if (baselinePeak > product.maxStock) {
+                  breachReasons.push("Baseline Over Max");
+                }
+                if (hardServiceDeficit > maxHeadroom) {
                   breachReasons.push("Coverage");
                 }
-                if (serviceMaxPoint > product.maxStock && hardServiceDeficit <= maxAllowedQty) {
+                if (serviceMaxPoint > product.maxStock && hardServiceDeficit <= maxHeadroom) {
                   breachReasons.push("Projected Peak");
                 }
 
-                if (product.orderType === "case" && product.caseSize > 0 && hardServiceDeficit <= maxAllowedQty) {
+                if (product.orderType === "case" && product.caseSize > 0 && hardServiceDeficit <= maxHeadroom) {
                   const caseRounded = Math.ceil(Math.max(0, hardServiceDeficit) / product.caseSize) * product.caseSize;
-                  if (caseRounded > maxAllowedQty) breachReasons.push("Case Pack");
+                  if (caseRounded > maxHeadroom) breachReasons.push("Case Pack");
                 }
 
                 if (product.moq > 0) {
                   const moqRounded = applyOrderConstraints(product.moq);
-                  if (moqRounded > maxAllowedQty) breachReasons.push("MOQ");
+                  if (moqRounded > maxHeadroom) breachReasons.push("MOQ");
                 }
 
                 const uniqueReasons = [...new Set(breachReasons)];
@@ -453,11 +451,8 @@ function generatePurchaseOrders() {
           const orderWeekStr = getIsoWeekString(orderDate);
           const arrivalWeekStr = getIsoWeekString(plannedArrivalDate);
 
-          // Flag max breaches using arrival peak and cycle-window projected peak.
-          const modeledMaxPoint = Math.max(
-            startStockForWeek + inbound + qtyToOrder,
-            simulateCyclePeakStock(w, weekClosing, qtyToOrder, Math.max(1, freqWeeksToCover))
-          );
+          // Flag max breaches across remaining horizon for chosen quantity.
+          const modeledMaxPoint = baselinePeak + qtyToOrder;
           if (
             product.maxStock > 0 &&
             modeledMaxPoint > product.maxStock &&
