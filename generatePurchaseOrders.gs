@@ -1,54 +1,65 @@
 /**
- * GENERATE PURCHASE ORDER RECOMMENDATIONS
+ * GENERATE PURCHASE ORDER RECOMMENDATIONS (AMV)
  *
- * Update: Enforces "Cycle Coverage". If an order is triggered, it ensures the quantity
- * is sufficient to last the full 'Ideal Order Frequency' period.
- *
- * Update: The weekly minimum floor now targets:
- *   Safety Stock + following week's demand
- * instead of Safety Stock alone.
- *
- * Update: Soft-cap optimizer for max stock:
- *   1) Keep service floor as highest priority.
- *   2) Try to reduce to a max-compliant quantity when possible.
- *   3) If breach is unavoidable, still recommend and annotate why.
+ * Key behavior:
+ * - Trigger floor uses Safety Stock + following week's demand.
+ * - Keeps ideal frequency fill when feasible.
+ * - Prioritizes avoiding max breach over frequency fill.
+ * - If both preferred/service breach max, attempts max-compliant split quantity.
+ * - Enforces lead-time-feasible arrival timing.
+ * - Writes PO output in A:F:
+ *   A SKU, B Name, C Order Week, D Qty, E Arrival Week, F Comments
+ * - Writes additional projection debug rows for Box flower M.
  */
 function generatePurchaseOrders() {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
 
   // --- CONFIGURATION ---
-  const ARRIVAL_BUFFER_WEEKS = 1; // Stock must arrive this many weeks BEFORE the shortage
-  const SINGLE_LOCATION_MODE = true; // This planner serves one DC/location; match settings primarily by SKU.
+  const ARRIVAL_BUFFER_WEEKS = 1;
   const SINGLE_LOCATION_NAME = "AMV DC";
+  const DEBUG_TARGET_SKU_NAME = "box flower m"; // case-insensitive contains
+
   const INV_HEADER_ROW = 6;
   const INV_DATA_START_ROW = 7;
   const CURRENT_WEEK_CELL = "B2";
-  const INV_SKU_COL = 1; // Column A
+  const INV_SKU_COL = 1;   // Column A
   const INV_LABEL_COL = 3; // Column C
 
   // --- SHEETS ---
   const settingsSheet = ss.getSheetByName("📋 Product Settings");
   const invSheet = ss.getSheetByName("📦🔮 Inventory Planner - Detailed View");
-  let outputSheet = ss.getSheetByName("🛍️ Purchase Order Recommendations");
+  const outputSheet = ss.getSheetByName("🛍️ Purchase Order Recommendations");
 
   let traceSheet = ss.getSheetByName("🐞 Debug Trace");
-  if (!traceSheet) {
-    traceSheet = ss.insertSheet("🐞 Debug Trace");
-  } else {
-    traceSheet.clear();
-  }
-  traceSheet.appendRow(["Location", "SKU", "Week", "Source Col Index", "Start Stock", "Inbound", "Outbound", "Closing (Pre-Order)", "Deficit", "Order Qty", "Strategy Used"]);
+  if (!traceSheet) traceSheet = ss.insertSheet("🐞 Debug Trace");
+  else traceSheet.clear();
+  traceSheet.appendRow([
+    "Location", "SKU", "Week", "Source Col Index", "Start Stock", "Inbound", "Outbound",
+    "Closing (Pre-Order)", "Deficit", "Order Qty", "Strategy Used"
+  ]);
+
+  let projectionDebugSheet = ss.getSheetByName("🧪 Debug Projection");
+  if (!projectionDebugSheet) projectionDebugSheet = ss.insertSheet("🧪 Debug Projection");
+  else projectionDebugSheet.clear();
+  projectionDebugSheet.appendRow([
+    "Location", "SKU", "Name", "Week",
+    "Start Stock", "Inbound (incl Rec PO)", "Outbound", "Adjustment",
+    "Closing Pre-Order", "Required Floor",
+    "Service Deficit", "Frequency Deficit",
+    "Qty Service", "Qty Frequency", "Qty Chosen",
+    "Arrival Week", "Baseline Peak", "Preferred Peak", "Service Peak", "Chosen Peak",
+    "Max Stock", "Strategy", "Comments"
+  ]);
 
   if (!settingsSheet || !invSheet || !outputSheet) {
     SpreadsheetApp.getUi().alert("Error: One or more required sheets are missing.");
     return;
   }
 
-  // --- 1. READ SETTINGS ---
-  const settingsSkuMap = new Map();
-  const settingsSkuLooseMap = new Map();
+  // --- HELPERS ---
   const normalizeToken = (val) => String(val || "").trim().toLowerCase();
   const normalizeCompact = (val) => normalizeToken(val).replace(/[^a-z0-9]/g, "");
+  const clean = (s) => String(s || "").toLowerCase().replace(/[^a-z0-9]/g, "");
   const parseNum = (val) => {
     if (typeof val === "number") return val;
     if (!val) return 0;
@@ -56,7 +67,11 @@ function generatePurchaseOrders() {
     return isNaN(n) ? 0 : n;
   };
 
-  const settingsData = settingsSheet.getRange(3, 1, settingsSheet.getLastRow() - 2, 13).getValues();
+  // --- 1) READ SETTINGS (SKU-first for single AMV file) ---
+  const settingsSkuMap = new Map();
+  const settingsSkuLooseMap = new Map();
+
+  const settingsData = settingsSheet.getRange(3, 1, Math.max(0, settingsSheet.getLastRow() - 2), 13).getValues();
   const buildProductConfig = (row, offset) => ({
     skuName: row[offset + 1],
     leadTimeDays: Number(row[offset + 2]) || 0,
@@ -65,7 +80,7 @@ function generatePurchaseOrders() {
     orderFreqDays: Number(row[offset + 5]) || 0,
     moq: Number(row[offset + 6]) || 0,
     maxStock: parseNum(row[offset + 7]),
-    orderType: String(row[offset + 8]).toLowerCase(),
+    orderType: String(row[offset + 8] || "").toLowerCase(),
     caseSize: Number(row[offset + 9]) || 0,
     unitsPerPallet: row[offset + 10]
   });
@@ -75,27 +90,18 @@ function generatePurchaseOrders() {
     const sku = normalizeToken(skuRaw);
     const skuLoose = normalizeCompact(skuRaw);
     const productConfig = buildProductConfig(row, offset);
-
     if (overwrite || !settingsSkuMap.has(sku)) settingsSkuMap.set(sku, productConfig);
     if (overwrite || !settingsSkuLooseMap.has(skuLoose)) settingsSkuLooseMap.set(skuLoose, productConfig);
     return true;
   };
-
   for (let r = 0; r < settingsData.length; r++) {
     const row = settingsData[r];
-    // Supports both layouts:
-    //  - single-location: SKU in col A (offset 0)
-    //  - legacy layout:   SKU in col B (offset 1)
-    if (SINGLE_LOCATION_MODE) {
-      const addedPrimary = addSettingsVariant(row, 0, true);
-      if (!addedPrimary) addSettingsVariant(row, 1, false);
-    } else {
-      const addedPrimary = addSettingsVariant(row, 1, true);
-      if (!addedPrimary) addSettingsVariant(row, 0, false);
-    }
+    // Prefer SKU in col A for AMV layout; fallback to col B.
+    const addedPrimary = addSettingsVariant(row, 0, true);
+    if (!addedPrimary) addSettingsVariant(row, 1, false);
   }
 
-  // --- 2. MAP HEADERS ---
+  // --- 2) MAP WEEK HEADERS ---
   const invLastRow = invSheet.getLastRow();
   const invLastCol = invSheet.getLastColumn();
   const headerRowVals = invSheet.getRange(INV_HEADER_ROW, 1, 1, invLastCol).getValues()[0];
@@ -104,31 +110,25 @@ function generatePurchaseOrders() {
   const weekRegex = /^\d{4}-W\d{2}$/;
 
   for (let c = 0; c < headerRowVals.length; c++) {
-    const val = String(headerRowVals[c]).trim();
-    if (weekRegex.test(val)) {
-      if (!weekColMap.has(val)) {
-        weekColMap.set(val, c);
-        weekHeaders.push(val);
-      }
+    const val = String(headerRowVals[c] || "").trim();
+    if (weekRegex.test(val) && !weekColMap.has(val)) {
+      weekColMap.set(val, c);
+      weekHeaders.push(val);
     }
   }
-
   if (weekHeaders.length === 0) {
     SpreadsheetApp.getUi().alert("Error: No 'YYYY-WXX' headers found in Row 6.");
     return;
   }
 
   const weekDates = weekHeaders.map((w) => getDateFromIsoWeek(w));
-
   let currentWeekStr = invSheet.getRange(CURRENT_WEEK_CELL).getValue();
   if (!currentWeekStr || typeof currentWeekStr !== "string") currentWeekStr = getIsoWeekString(new Date());
-
   const currentWeekIndex = weekHeaders.indexOf(currentWeekStr);
   if (currentWeekIndex === -1) {
     SpreadsheetApp.getUi().alert(`Error: Current week ${currentWeekStr} not found in headers.`);
     return;
   }
-
   const simulationStartIndex = currentWeekIndex + 1;
   if (simulationStartIndex >= weekHeaders.length) {
     SpreadsheetApp.getUi().alert("Error: No future weeks found after " + currentWeekStr);
@@ -136,25 +136,23 @@ function generatePurchaseOrders() {
   }
 
   const currentDateObj = getDateFromIsoWeek(currentWeekStr);
-  const invData = invSheet.getRange(INV_DATA_START_ROW, 1, invLastRow - (INV_DATA_START_ROW - 1), invLastCol).getValues();
+  const invData = invSheet.getRange(
+    INV_DATA_START_ROW, 1, Math.max(0, invLastRow - (INV_DATA_START_ROW - 1)), invLastCol
+  ).getValues();
 
-  // --- 3. DYNAMIC SCANNING ---
+  // --- 3) SCAN SKU BLOCKS ---
   const poRecommendations = [];
   const traceData = [];
+  const projectionDebugData = [];
   const scanStats = {
-    blocksScanned: 0,
-    matchedSettings: 0,
-    missingSettings: 0,
-    missingPredictedRow: 0,
-    triggerChecks: 0,
-    orderTriggers: 0
+    blocksScanned: 0, matchedSettings: 0, missingSettings: 0,
+    missingPredictedRow: 0, triggerChecks: 0, orderTriggers: 0
   };
-  let currentRowIndex = 0;
 
+  let currentRowIndex = 0;
   while (currentRowIndex < invData.length) {
     const firstRow = invData[currentRowIndex];
     const nsidRaw = firstRow[INV_SKU_COL - 1];
-
     if (!nsidRaw) {
       currentRowIndex++;
       continue;
@@ -162,15 +160,12 @@ function generatePurchaseOrders() {
 
     const nsid = String(nsidRaw).trim();
 
-    // Collect block rows
+    // Gather contiguous block for same SKU.
     const blockRows = [];
     while (currentRowIndex < invData.length) {
       const nextRow = invData[currentRowIndex];
-      const nextNsid = String(nextRow[INV_SKU_COL - 1]).trim();
-
-      if (blockRows.length > 0 && nextNsid !== "") {
-        if (nextNsid !== nsid) break;
-      }
+      const nextNsid = String(nextRow[INV_SKU_COL - 1] || "").trim();
+      if (blockRows.length > 0 && nextNsid !== "" && nextNsid !== nsid) break;
       blockRows.push(nextRow);
       currentRowIndex++;
     }
@@ -183,18 +178,12 @@ function generatePurchaseOrders() {
     }
     scanStats.matchedSettings++;
 
-    // Find Logic Rows
+    // Identify logic rows from label column C.
     let rowPredicted, rowInboundDue, rowInboundRec, rowForecast, rowTransfers, rowAdj, rowClosing;
-    const clean = (s) => String(s).toLowerCase().replace(/[^a-z0-9]/g, "");
-    const getLabel = (row) => {
-      const raw = row[INV_LABEL_COL - 1];
-      return clean(raw);
-    };
-
+    const getLabel = (row) => clean(row[INV_LABEL_COL - 1]);
     blockRows.forEach((row) => {
       const label = getLabel(row);
       if (!label) return;
-
       const isStartingStock = label.includes("startingstock") && !label.includes("closingstock");
       if (!rowPredicted && (label.includes("predictedstartingstock") || isStartingStock || label.includes("predicted"))) {
         rowPredicted = row;
@@ -221,7 +210,7 @@ function generatePurchaseOrders() {
     if (!rowTransfers) rowTransfers = zeroRow;
     if (!rowAdj) rowAdj = zeroRow;
 
-    // Initialize Ledger
+    // Starting stock comes from simulation start week (fallback to current week).
     const startWeekHeader = weekHeaders[simulationStartIndex];
     const startCol = weekColMap.get(startWeekHeader);
     let rawPred = rowPredicted ? rowPredicted[startCol] : "";
@@ -235,7 +224,6 @@ function generatePurchaseOrders() {
     }
 
     let runningInventory = parseNum(rawPred);
-
     let eolIndex = -1;
     if (product.lastWeekPlanned && product.lastWeekPlanned !== "N/A") {
       eolIndex = weekHeaders.indexOf(product.lastWeekPlanned);
@@ -248,72 +236,66 @@ function generatePurchaseOrders() {
     const getDemandForWeek = (weekIndex) => {
       if (weekIndex < 0 || weekIndex >= weekHeaders.length) return 0;
       const dCol = weekColMap.get(weekHeaders[weekIndex]);
-      const demand = parseNum(rowForecast[dCol]) + parseNum(rowTransfers[dCol]);
-      return Math.max(0, demand);
+      return Math.max(0, parseNum(rowForecast[dCol]) + parseNum(rowTransfers[dCol]));
     };
-
     const getRequiredFloorForWeek = (weekIndex) => {
       if (eolIndex !== -1 && weekIndex >= eolIndex) return 0;
-      const safety = product.safetyStock;
-      const nextWeekDemand = getDemandForWeek(weekIndex + 1);
-      return safety + nextWeekDemand;
+      return product.safetyStock + getDemandForWeek(weekIndex + 1);
     };
 
     const applyOrderConstraints = (rawQty) => {
       let qty = Math.max(0, rawQty);
-      if (product.orderType === "case" && product.caseSize > 0) {
-        qty = Math.ceil(qty / product.caseSize) * product.caseSize;
-      } else {
-        qty = Math.ceil(qty);
-      }
-
+      if (product.orderType === "case" && product.caseSize > 0) qty = Math.ceil(qty / product.caseSize) * product.caseSize;
+      else qty = Math.ceil(qty);
       if (qty < product.moq) {
         qty = product.moq;
-        if (product.orderType === "case" && product.caseSize > 0) {
-          qty = Math.ceil(qty / product.caseSize) * product.caseSize;
-        }
+        if (product.orderType === "case" && product.caseSize > 0) qty = Math.ceil(qty / product.caseSize) * product.caseSize;
       }
       return qty;
     };
-
-    // Max-compliant quantity (round down so we do not exceed max cap).
     const getMaxCompliantQty = (maxAllowedQty) => {
       if (!isFinite(maxAllowedQty) || maxAllowedQty <= 0) return 0;
-      let qty;
-      if (product.orderType === "case" && product.caseSize > 0) {
-        qty = Math.floor(maxAllowedQty / product.caseSize) * product.caseSize;
-      } else {
-        qty = Math.floor(maxAllowedQty);
-      }
+      let qty = 0;
+      if (product.orderType === "case" && product.caseSize > 0) qty = Math.floor(maxAllowedQty / product.caseSize) * product.caseSize;
+      else qty = Math.floor(maxAllowedQty);
       if (qty <= 0) return 0;
       if (product.moq > 0 && qty < product.moq) return 0;
       return qty;
     };
 
-    // Simulate projected stock over this order cycle after injecting an order now.
-    const simulateCyclePeakStock = (weekIndex, preOrderClosing, orderQty, cycleWeeks) => {
-      let tempRunning = preOrderClosing + orderQty;
-      let peak = tempRunning;
-      const weeksToSimulate = Math.max(1, cycleWeeks);
-
-      for (let f = 1; f < weeksToSimulate; f++) {
-        if (weekIndex + f >= weekHeaders.length) break;
-        const fIndex = weekColMap.get(weekHeaders[weekIndex + f]);
-        const fIn = parseNum(rowInboundDue[fIndex]) + parseNum(rowInboundRec[fIndex]);
-        const fOut = parseNum(rowForecast[fIndex]) + parseNum(rowTransfers[fIndex]);
-        const fAdj = parseNum(rowAdj[fIndex]);
-        tempRunning = tempRunning + fIn - fOut + fAdj;
-        if (tempRunning > peak) peak = tempRunning;
+    // Carries future recommended arrivals into simulation.
+    const recommendedInbound = new Array(weekHeaders.length).fill(0);
+    const simulatePeak = (startWeekIdx, preOrderClosing, orderQty, arrivalIdx, horizonWeeks) => {
+      let temp = preOrderClosing + (arrivalIdx === startWeekIdx ? orderQty : 0);
+      let peak = temp;
+      const maxF = Math.max(1, horizonWeeks);
+      for (let f = 1; f < maxF; f++) {
+        const idx = startWeekIdx + f;
+        if (idx >= weekHeaders.length) break;
+        const col = weekColMap.get(weekHeaders[idx]);
+        const inQty =
+          parseNum(rowInboundDue[col]) +
+          parseNum(rowInboundRec[col]) +
+          parseNum(recommendedInbound[idx]) +
+          (arrivalIdx === idx ? orderQty : 0);
+        const outQty = parseNum(rowForecast[col]) + parseNum(rowTransfers[col]);
+        const aQty = parseNum(rowAdj[col]);
+        temp = temp + inQty - outQty + aQty;
+        if (temp > peak) peak = temp;
       }
       return peak;
     };
 
-    // --- SIMULATION LOOP ---
+    const skuNameNorm = normalizeToken(product.skuName);
+    const skuCodeNorm = normalizeToken(nsidRaw);
+    const isDebugSku = skuNameNorm.includes(DEBUG_TARGET_SKU_NAME) || skuCodeNorm.includes(normalizeToken(DEBUG_TARGET_SKU_NAME));
+
+    // --- WEEKLY SIMULATION ---
     for (let w = simulationStartIndex; w < weekHeaders.length; w++) {
       const thisWeekStr = weekHeaders[w];
       const colIndex = weekColMap.get(thisWeekStr);
 
-      const inbound = parseNum(rowInboundDue[colIndex]) + parseNum(rowInboundRec[colIndex]);
+      const inbound = parseNum(rowInboundDue[colIndex]) + parseNum(rowInboundRec[colIndex]) + parseNum(recommendedInbound[w]);
       const outbound = parseNum(rowForecast[colIndex]) + parseNum(rowTransfers[colIndex]);
       const adj = parseNum(rowAdj[colIndex]);
 
@@ -322,41 +304,42 @@ function generatePurchaseOrders() {
       let qtyToOrder = 0;
       let deficit = 0;
       let strategy = "";
+      let requiredFloorForLog = getRequiredFloorForWeek(w);
+      let hardServiceDeficitForLog = 0;
+      let preferredDeficitForLog = 0;
+      let qtyServiceForLog = 0;
+      let qtyPreferredForLog = 0;
+      let arrivalWeekForLog = "";
+      let baselinePeakForLog = 0;
+      let preferredPeakForLog = 0;
+      let servicePeakForLog = 0;
+      let chosenPeakForLog = 0;
+      let commentsForLog = "";
 
       if (w >= earliestArrivalIndex) {
         scanStats.triggerChecks++;
-        // Trigger condition now uses Safety + following week's demand.
         const requiredFloor = getRequiredFloorForWeek(w);
+        requiredFloorForLog = requiredFloor;
 
         if (weekClosing < requiredFloor) {
           scanStats.orderTriggers++;
-          // 1) Immediate weekly survival floor (with next-week cover)
           deficit = requiredFloor - weekClosing;
           strategy = "Survival + Next Week Cover";
 
-          // 2) Frequency logic: ensure floor is preserved through cycle
           let cycleDeficit = deficit;
-
           if (freqWeeksToCover > 1 && (eolIndex === -1 || w < eolIndex)) {
             let tempRunning = weekClosing;
-
             for (let f = 1; f < freqWeeksToCover; f++) {
-              if (w + f < weekHeaders.length) {
-                const fIndex = weekColMap.get(weekHeaders[w + f]);
-                const fIn = parseNum(rowInboundDue[fIndex]) + parseNum(rowInboundRec[fIndex]);
-                const fOut = parseNum(rowForecast[fIndex]) + parseNum(rowTransfers[fIndex]);
-                const fAdj = parseNum(rowAdj[fIndex]);
-
-                tempRunning = tempRunning + fIn - fOut + fAdj;
-
-                const futureRequiredFloor = getRequiredFloorForWeek(w + f);
-                const neededAtFutureWeek = futureRequiredFloor - tempRunning;
-                if (neededAtFutureWeek > cycleDeficit) {
-                  cycleDeficit = neededAtFutureWeek;
-                }
-              }
+              if (w + f >= weekHeaders.length) break;
+              const fCol = weekColMap.get(weekHeaders[w + f]);
+              const fIn = parseNum(rowInboundDue[fCol]) + parseNum(rowInboundRec[fCol]);
+              const fOut = parseNum(rowForecast[fCol]) + parseNum(rowTransfers[fCol]);
+              const fAdj = parseNum(rowAdj[fCol]);
+              tempRunning = tempRunning + fIn - fOut + fAdj;
+              const futureFloor = getRequiredFloorForWeek(w + f);
+              const needed = futureFloor - tempRunning;
+              if (needed > cycleDeficit) cycleDeficit = needed;
             }
-
             if (cycleDeficit > deficit) {
               deficit = cycleDeficit;
               strategy = "Frequency Fill + Next Week Cover";
@@ -367,25 +350,50 @@ function generatePurchaseOrders() {
           const preferredCoverageDeficit = deficit;
           const qtyForHardService = applyOrderConstraints(hardServiceDeficit);
           const qtyForPreferredCoverage = applyOrderConstraints(preferredCoverageDeficit);
-
+          hardServiceDeficitForLog = hardServiceDeficit;
+          preferredDeficitForLog = preferredCoverageDeficit;
+          qtyServiceForLog = qtyForHardService;
+          qtyPreferredForLog = qtyForPreferredCoverage;
           qtyToOrder = qtyForPreferredCoverage;
 
           const commentParts = [];
-          const maxRiskWeeks = weekHeaders.length - w; // check max risk across remaining horizon
-          const baselinePeak = simulateCyclePeakStock(w, weekClosing, 0, maxRiskWeeks);
-          const preferredMaxPoint = baselinePeak + qtyForPreferredCoverage;
-          const serviceMaxPoint = baselinePeak + qtyForHardService;
-          const maxHeadroom = product.maxStock > 0 ? product.maxStock - baselinePeak : Number.POSITIVE_INFINITY;
 
-          // Prioritize avoiding max breaches over ideal frequency whenever possible.
-          if (product.maxStock > 0 && preferredMaxPoint > product.maxStock) {
-            if (serviceMaxPoint <= product.maxStock) {
-              // Respect max by dialing back from frequency-fill to minimum service floor.
+          // Timing
+          const shortageDate = weekDates[w];
+          const targetArrivalDate = new Date(shortageDate);
+          targetArrivalDate.setDate(targetArrivalDate.getDate() - ARRIVAL_BUFFER_WEEKS * 7);
+          const earliestFeasibleArrivalDate = new Date(currentDateObj);
+          earliestFeasibleArrivalDate.setDate(earliestFeasibleArrivalDate.getDate() + product.leadTimeDays);
+          const plannedArrivalDate = new Date(targetArrivalDate);
+          if (plannedArrivalDate < earliestFeasibleArrivalDate) {
+            plannedArrivalDate.setTime(earliestFeasibleArrivalDate.getTime());
+            commentParts.push("Lead Time Constraint (Arrival Shifted Later)");
+          }
+          const orderDate = new Date(plannedArrivalDate);
+          orderDate.setDate(orderDate.getDate() - product.leadTimeDays);
+          if (orderDate < currentDateObj) orderDate.setTime(currentDateObj.getTime());
+
+          const orderWeekStr = getIsoWeekString(orderDate);
+          const arrivalWeekStr = getIsoWeekString(plannedArrivalDate);
+          const plannedArrivalIndex = weekHeaders.indexOf(arrivalWeekStr);
+          arrivalWeekForLog = arrivalWeekStr;
+
+          // Max-priority decisioning
+          const horizonWeeks = weekHeaders.length - w;
+          const baselinePeak = simulatePeak(w, weekClosing, 0, -1, horizonWeeks);
+          const preferredPeak = simulatePeak(w, weekClosing, qtyForPreferredCoverage, plannedArrivalIndex, horizonWeeks);
+          const servicePeak = simulatePeak(w, weekClosing, qtyForHardService, plannedArrivalIndex, horizonWeeks);
+          const maxHeadroom = product.maxStock > 0 ? product.maxStock - baselinePeak : Number.POSITIVE_INFINITY;
+          baselinePeakForLog = baselinePeak;
+          preferredPeakForLog = preferredPeak;
+          servicePeakForLog = servicePeak;
+
+          if (product.maxStock > 0 && preferredPeak > product.maxStock) {
+            if (servicePeak <= product.maxStock) {
               qtyToOrder = qtyForHardService;
               strategy = `${strategy} (Soft Capped)`;
               commentParts.push("Soft Capped to Max (Frequency Fill Reduced)");
             } else {
-              // If possible, split orders and prioritize staying under max.
               const maxCompliantQty = getMaxCompliantQty(maxHeadroom);
               if (maxCompliantQty > 0) {
                 qtyToOrder = maxCompliantQty;
@@ -393,73 +401,37 @@ function generatePurchaseOrders() {
                 commentParts.push("Max Prioritized (Split Order to Avoid Breach)");
                 commentParts.push("Service Floor Deferred (Additional PO Likely)");
               } else {
-                // Max breach is unavoidable while still protecting service floor.
                 qtyToOrder = qtyForHardService;
                 const breachReasons = [];
-
-                if (baselinePeak > product.maxStock) {
-                  breachReasons.push("Baseline Over Max");
-                }
-                if (hardServiceDeficit > maxHeadroom) {
-                  breachReasons.push("Coverage");
-                }
-                if (serviceMaxPoint > product.maxStock && hardServiceDeficit <= maxHeadroom) {
-                  breachReasons.push("Projected Peak");
-                }
-
+                if (baselinePeak > product.maxStock) breachReasons.push("Baseline Over Max");
+                if (hardServiceDeficit > maxHeadroom) breachReasons.push("Coverage");
+                if (servicePeak > product.maxStock && hardServiceDeficit <= maxHeadroom) breachReasons.push("Projected Peak");
                 if (product.orderType === "case" && product.caseSize > 0 && hardServiceDeficit <= maxHeadroom) {
                   const caseRounded = Math.ceil(Math.max(0, hardServiceDeficit) / product.caseSize) * product.caseSize;
                   if (caseRounded > maxHeadroom) breachReasons.push("Case Pack");
                 }
-
                 if (product.moq > 0) {
                   const moqRounded = applyOrderConstraints(product.moq);
                   if (moqRounded > maxHeadroom) breachReasons.push("MOQ");
                 }
-
                 const uniqueReasons = [...new Set(breachReasons)];
-                if (uniqueReasons.length > 0) {
-                  commentParts.push(`Max Capacity Breached (Unavoidable: ${uniqueReasons.join(", ")})`);
-                } else {
-                  commentParts.push("Max Capacity Breached");
-                }
+                if (uniqueReasons.length > 0) commentParts.push(`Max Capacity Breached (Unavoidable: ${uniqueReasons.join(", ")})`);
+                else commentParts.push("Max Capacity Breached");
               }
             }
           }
 
-          // Order Timing & Buffer
-          const shortageDate = weekDates[w];
-          const targetArrivalDate = new Date(shortageDate);
-          targetArrivalDate.setDate(targetArrivalDate.getDate() - ARRIVAL_BUFFER_WEEKS * 7);
-
-          // Arrival cannot be earlier than what lead time allows from "now".
-          const earliestFeasibleArrivalDate = new Date(currentDateObj);
-          earliestFeasibleArrivalDate.setDate(earliestFeasibleArrivalDate.getDate() + product.leadTimeDays);
-
-          const plannedArrivalDate = new Date(targetArrivalDate);
-          if (plannedArrivalDate < earliestFeasibleArrivalDate) {
-            plannedArrivalDate.setTime(earliestFeasibleArrivalDate.getTime());
-            commentParts.push("Lead Time Constraint (Arrival Shifted Later)");
-          }
-
-          const orderDate = new Date(plannedArrivalDate);
-          orderDate.setDate(orderDate.getDate() - product.leadTimeDays);
-          if (orderDate < currentDateObj) {
-            orderDate.setTime(currentDateObj.getTime());
-          }
-
-          const orderWeekStr = getIsoWeekString(orderDate);
-          const arrivalWeekStr = getIsoWeekString(plannedArrivalDate);
-
-          // Flag max breaches across remaining horizon for chosen quantity.
-          const modeledMaxPoint = baselinePeak + qtyToOrder;
+          const chosenPeak = simulatePeak(w, weekClosing, qtyToOrder, plannedArrivalIndex, horizonWeeks);
+          chosenPeakForLog = chosenPeak;
           if (
             product.maxStock > 0 &&
-            modeledMaxPoint > product.maxStock &&
+            chosenPeak > product.maxStock &&
             !commentParts.some((c) => c.startsWith("Max Capacity Breached"))
           ) {
             commentParts.push("Max Capacity Breached");
           }
+
+          commentsForLog = commentParts.join("; ");
 
           poRecommendations.push([
             nsidRaw,
@@ -467,14 +439,49 @@ function generatePurchaseOrders() {
             orderWeekStr,
             qtyToOrder,
             arrivalWeekStr,
-            commentParts.join("; ")
+            commentsForLog
           ]);
 
-          weekClosing += qtyToOrder;
+          // Apply order at arrival timing in simulation ledger.
+          if (plannedArrivalIndex === -1) {
+            commentParts.push("Arrival Beyond Planning Horizon");
+          } else if (plannedArrivalIndex <= w) {
+            weekClosing += qtyToOrder;
+          } else {
+            recommendedInbound[plannedArrivalIndex] += qtyToOrder;
+          }
         }
       }
 
-      // Trace logging for specific SKU to debug
+      if (isDebugSku) {
+        projectionDebugData.push([
+          SINGLE_LOCATION_NAME,
+          nsidRaw,
+          product.skuName,
+          thisWeekStr,
+          Math.round(startStockForWeek),
+          inbound,
+          outbound,
+          adj,
+          Math.round(weekClosing),
+          Math.round(requiredFloorForLog),
+          Math.round(hardServiceDeficitForLog),
+          Math.round(preferredDeficitForLog),
+          Math.round(qtyServiceForLog),
+          Math.round(qtyPreferredForLog),
+          Math.round(qtyToOrder),
+          arrivalWeekForLog,
+          Math.round(baselinePeakForLog),
+          Math.round(preferredPeakForLog),
+          Math.round(servicePeakForLog),
+          Math.round(chosenPeakForLog),
+          product.maxStock,
+          strategy,
+          commentsForLog
+        ]);
+      }
+
+      // Existing targeted trace
       if (String(nsidRaw).includes("PK-11-00002")) {
         traceData.push([
           SINGLE_LOCATION_NAME,
@@ -495,17 +502,19 @@ function generatePurchaseOrders() {
     }
   }
 
-  // --- WRITE OUTPUT ---
+  // --- 4) WRITE OUTPUTS ---
   const lastRow = outputSheet.getLastRow();
   if (lastRow > 1) outputSheet.getRange(2, 1, lastRow - 1, 6).clearContent();
-
   if (poRecommendations.length > 0) {
-    poRecommendations.sort((a, b) => (a[3] < b[3] ? -1 : 1));
+    poRecommendations.sort((a, b) => (a[2] < b[2] ? -1 : 1)); // by order week
     outputSheet.getRange(2, 1, poRecommendations.length, 6).setValues(poRecommendations);
   }
 
   if (traceData.length > 0) {
     traceSheet.getRange(2, 1, traceData.length, 11).setValues(traceData);
+  }
+  if (projectionDebugData.length > 0) {
+    projectionDebugSheet.getRange(2, 1, projectionDebugData.length, 23).setValues(projectionDebugData);
   }
 
   let completionMessage = `Generated ${poRecommendations.length} POs.`;
