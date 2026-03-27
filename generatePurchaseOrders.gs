@@ -515,6 +515,7 @@ function generatePurchaseOrders() {
           } else {
             recommendedInbound[plannedArrivalIndex] += qtyToOrder;
           }
+          recInboundForLog = parseNum(recommendedInbound[w]) + recAppliedSameWeekForLog;
           closingPostOrderForLog = weekClosing;
         }
       }
