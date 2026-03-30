@@ -23,9 +23,11 @@
  * Settings sheet (optional):
  * - ⚙️ Truck Fill Settings
  *   A Key, B Value
- *   TARGET_TRUCK_FILL_RATIO (default 1.0)
- *   MIN_TRUCK_FILL_RATIO (default 0.9)
- *   MAX_TRUCK_FILL_RATIO (default 1.05)
+ *   LOOKBACK_WEEKS (default 0)
+ *   LOOKAHEAD_WEEKS (default 2)
+ *   MIN_TRUCK_FILL_PCT (default 90)
+ *   TARGET_TRUCK_FILL_PCT (default 100)
+ *   ALLOW_MIXED_ORDER_WEEKS (default TRUE)
  *   MAX_UPLIFT_PCT (default 0.10)
  */
 
@@ -38,10 +40,12 @@ function setupTruckFillSheets() {
 
   ensureHeader_(settingsSheet, ["Key", "Value"]);
   if (settingsSheet.getLastRow() < 2 || String(settingsSheet.getRange(2, 1).getValue()).trim() === "") {
-    settingsSheet.getRange(2, 1, 4, 2).setValues([
-      ["TARGET_TRUCK_FILL_RATIO", 1.0],
-      ["MIN_TRUCK_FILL_RATIO", 0.9],
-      ["MAX_TRUCK_FILL_RATIO", 1.05],
+    settingsSheet.getRange(2, 1, 6, 2).setValues([
+      ["LOOKBACK_WEEKS", 0],
+      ["LOOKAHEAD_WEEKS", 2],
+      ["MIN_TRUCK_FILL_PCT", 90],
+      ["TARGET_TRUCK_FILL_PCT", 100],
+      ["ALLOW_MIXED_ORDER_WEEKS", true],
       ["MAX_UPLIFT_PCT", 0.1]
     ]);
   }
