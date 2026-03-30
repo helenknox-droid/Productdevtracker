@@ -87,6 +87,13 @@ function setupTruckFillSheets() {
   ]);
 }
 
+/**
+ * Convenience entrypoint so users can run `truckFillOptimizer`.
+ */
+function truckFillOptimizer() {
+  buildTruckFillPlan();
+}
+
 function buildTruckFillPlan() {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   const recSheet = ss.getSheetByName("🛍️ Purchase Order Recommendations");
