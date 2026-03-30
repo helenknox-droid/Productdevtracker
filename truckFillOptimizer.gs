@@ -13,18 +13,12 @@
  * - 🛍️ Purchase Order Recommendations (A:F expected):
  *   A SKU, B Name, C Order Week, D Qty, E Arrival Week, F Comments
  *
- * Config sheet:
- * - 🚚 Truck Fill Data
- *   A SKU
- *   B Supplier
- *   C Units Per Pallet
- *   D Pallets Per Truck
- *   E Allow Increase (TRUE/FALSE)
- *   F Max Increase % (e.g. 0.15)
- *   G Allow Decrease (TRUE/FALSE)
- *   H Max Decrease % (e.g. 0.10)
- *   I Priority (lower = more protected; higher = more flexible)
- *   J Notes
+ * Product settings source:
+ * - 📋 Product Settings (starting row 3)
+ *   L Units per pallet
+ *   M Truck Fill Required (checkbox)
+ *   N Supplier
+ *   O Pallets per truck
  *
  * Settings sheet (optional):
  * - ⚙️ Truck Fill Settings
@@ -32,35 +26,23 @@
  *   TARGET_TRUCK_FILL_RATIO (default 1.0)
  *   MIN_TRUCK_FILL_RATIO (default 0.9)
  *   MAX_TRUCK_FILL_RATIO (default 1.05)
+ *   MAX_UPLIFT_PCT (default 0.10)
  */
 
 function setupTruckFillSheets() {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
 
-  const dataSheet = getOrCreateSheet_(ss, "🚚 Truck Fill Data");
   const settingsSheet = getOrCreateSheet_(ss, "⚙️ Truck Fill Settings");
   const planSheet = getOrCreateSheet_(ss, "🚚 Truck Fill Plan");
   const auditSheet = getOrCreateSheet_(ss, "🧾 Truck Fill Audit");
 
-  ensureHeader_(dataSheet, [
-    "SKU",
-    "Supplier",
-    "Units Per Pallet",
-    "Pallets Per Truck",
-    "Allow Increase",
-    "Max Increase %",
-    "Allow Decrease",
-    "Max Decrease %",
-    "Priority",
-    "Notes"
-  ]);
-
   ensureHeader_(settingsSheet, ["Key", "Value"]);
-  if (settingsSheet.getLastRow() < 2) {
-    settingsSheet.getRange(2, 1, 3, 2).setValues([
+  if (settingsSheet.getLastRow() < 2 || String(settingsSheet.getRange(2, 1).getValue()).trim() === "") {
+    settingsSheet.getRange(2, 1, 4, 2).setValues([
       ["TARGET_TRUCK_FILL_RATIO", 1.0],
       ["MIN_TRUCK_FILL_RATIO", 0.9],
-      ["MAX_TRUCK_FILL_RATIO", 1.05]
+      ["MAX_TRUCK_FILL_RATIO", 1.05],
+      ["MAX_UPLIFT_PCT", 0.1]
     ]);
   }
 
@@ -104,18 +86,18 @@ function setupTruckFillSheets() {
 function buildTruckFillPlan() {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   const recSheet = ss.getSheetByName("🛍️ Purchase Order Recommendations");
-  const dataSheet = ss.getSheetByName("🚚 Truck Fill Data");
+  const productSettingsSheet = ss.getSheetByName("📋 Product Settings");
   const settingsSheet = ss.getSheetByName("⚙️ Truck Fill Settings");
   const planSheet = ss.getSheetByName("🚚 Truck Fill Plan");
   const auditSheet = ss.getSheetByName("🧾 Truck Fill Audit");
 
-  if (!recSheet || !dataSheet || !planSheet || !auditSheet) {
-    SpreadsheetApp.getUi().alert("Missing required sheets. Run setupTruckFillSheets() first.");
+  if (!recSheet || !productSettingsSheet || !planSheet || !auditSheet) {
+    SpreadsheetApp.getUi().alert("Missing required sheets. Need 🛍️ Purchase Order Recommendations, 📋 Product Settings, 🚚 Truck Fill Plan, 🧾 Truck Fill Audit.");
     return;
   }
 
   const settings = readTruckFillSettings_(settingsSheet);
-  const truckMap = readTruckFillData_(dataSheet);
+  const truckMap = readTruckFillDataFromProductSettings_(productSettingsSheet, settings);
   const recLines = readRecommendationLines_(recSheet);
 
   const groups = new Map();
@@ -296,7 +278,7 @@ function buildTruckFillPlan() {
   }
 
   const warningMsg = unmappedSkus.length > 0
-    ? `\nUnmapped SKUs in 🚚 Truck Fill Data: ${[...new Set(unmappedSkus)].join(", ")}`
+    ? `\nUnmapped SKUs in 📋 Product Settings (M/N/O/L): ${[...new Set(unmappedSkus)].join(", ")}`
     : "";
   SpreadsheetApp.getUi().alert(
     `Truck fill plan created.\nLines: ${planRows.length}\nGroups: ${auditRows.length}${warningMsg}`
@@ -324,36 +306,33 @@ function readRecommendationLines_(recSheet) {
   return rows;
 }
 
-function readTruckFillData_(dataSheet) {
+function readTruckFillDataFromProductSettings_(productSettingsSheet, settings) {
   const map = new Map();
-  const lastRow = dataSheet.getLastRow();
+  const lastRow = productSettingsSheet.getLastRow();
   if (lastRow < 2) return map;
-  const values = dataSheet.getRange(2, 1, lastRow - 1, 10).getValues();
+  const values = productSettingsSheet.getRange(3, 1, Math.max(0, lastRow - 2), 15).getValues();
 
   for (let i = 0; i < values.length; i++) {
     const r = values[i];
-    const sku = String(r[0] || "").trim();
+    const sku = String(r[0] || r[1] || "").trim(); // prefer col A, fallback col B
     if (!sku) continue;
-    const supplier = String(r[1] || "").trim();
-    const unitsPerPallet = Number(r[2]) || 0;
-    const palletsPerTruck = Number(r[3]) || 0;
-    if (!supplier || unitsPerPallet <= 0 || palletsPerTruck <= 0) continue;
+    const truckFillRequired = parseBool_(r[12], false); // col M
+    if (!truckFillRequired) continue;
 
-    const allowIncrease = parseBool_(r[4], true);
-    const maxIncreasePct = clampPct_(r[5], 0.15);
-    const allowDecrease = parseBool_(r[6], false);
-    const maxDecreasePct = clampPct_(r[7], 0.0);
-    const priority = Number(r[8]);
+    const supplier = String(r[13] || "").trim(); // col N
+    const unitsPerPallet = Number(r[11]) || 0; // col L
+    const palletsPerTruck = Number(r[14]) || 0; // col O
+    if (!supplier || unitsPerPallet <= 0 || palletsPerTruck <= 0) continue;
 
     map.set(sku, {
       supplier,
       unitsPerPallet,
       palletsPerTruck,
-      allowIncrease,
-      maxIncreasePct,
-      allowDecrease,
-      maxDecreasePct,
-      priority: isNaN(priority) ? 100 : priority
+      allowIncrease: true,
+      maxIncreasePct: settings.maxUpliftPct,
+      allowDecrease: false,
+      maxDecreasePct: 0,
+      priority: 100
     });
   }
   return map;
@@ -363,7 +342,8 @@ function readTruckFillSettings_(settingsSheet) {
   const defaults = {
     targetFillRatio: 1.0,
     minFillRatio: 0.9,
-    maxFillRatio: 1.05
+    maxFillRatio: 1.05,
+    maxUpliftPct: 0.10
   };
   if (!settingsSheet || settingsSheet.getLastRow() < 2) return defaults;
 
@@ -378,7 +358,8 @@ function readTruckFillSettings_(settingsSheet) {
   return {
     targetFillRatio: safeNumber_(kv.TARGET_TRUCK_FILL_RATIO, defaults.targetFillRatio),
     minFillRatio: safeNumber_(kv.MIN_TRUCK_FILL_RATIO, defaults.minFillRatio),
-    maxFillRatio: safeNumber_(kv.MAX_TRUCK_FILL_RATIO, defaults.maxFillRatio)
+    maxFillRatio: safeNumber_(kv.MAX_TRUCK_FILL_RATIO, defaults.maxFillRatio),
+    maxUpliftPct: clampPct_(kv.MAX_UPLIFT_PCT, defaults.maxUpliftPct)
   };
 }
 
