@@ -347,7 +347,10 @@ function readTruckFillSettings_(settingsSheet) {
     targetFillRatio: 1.0,
     minFillRatio: 0.9,
     maxFillRatio: 1.05,
-    maxUpliftPct: 0.10
+    maxUpliftPct: 0.10,
+    lookbackWeeks: 0,
+    lookaheadWeeks: 2,
+    allowMixedOrderWeeks: true
   };
   if (!settingsSheet || settingsSheet.getLastRow() < 2) return defaults;
 
@@ -360,10 +363,16 @@ function readTruckFillSettings_(settingsSheet) {
   }
 
   return {
-    targetFillRatio: safeNumber_(kv.TARGET_TRUCK_FILL_RATIO, defaults.targetFillRatio),
-    minFillRatio: safeNumber_(kv.MIN_TRUCK_FILL_RATIO, defaults.minFillRatio),
+    // Preferred keys (percent-based)
+    targetFillRatio: pctToRatio_(kv.TARGET_TRUCK_FILL_PCT, safeNumber_(kv.TARGET_TRUCK_FILL_RATIO, defaults.targetFillRatio)),
+    minFillRatio: pctToRatio_(kv.MIN_TRUCK_FILL_PCT, safeNumber_(kv.MIN_TRUCK_FILL_RATIO, defaults.minFillRatio)),
+    // Keep max fill ratio backward-compatible only
     maxFillRatio: safeNumber_(kv.MAX_TRUCK_FILL_RATIO, defaults.maxFillRatio),
-    maxUpliftPct: clampPct_(kv.MAX_UPLIFT_PCT, defaults.maxUpliftPct)
+    // Accept MAX_UPLIFT_PCT as either percent (10) or ratio (0.10)
+    maxUpliftPct: normalizePctOrRatio_(kv.MAX_UPLIFT_PCT, defaults.maxUpliftPct),
+    lookbackWeeks: safeInt_(kv.LOOKBACK_WEEKS, defaults.lookbackWeeks),
+    lookaheadWeeks: safeInt_(kv.LOOKAHEAD_WEEKS, defaults.lookaheadWeeks),
+    allowMixedOrderWeeks: parseBool_(kv.ALLOW_MIXED_ORDER_WEEKS, defaults.allowMixedOrderWeeks)
   };
 }
 
@@ -403,6 +412,24 @@ function clampPct_(v, fallback) {
 
 function safeNumber_(v, fallback) {
   return typeof v === "number" && !isNaN(v) ? v : fallback;
+}
+
+function safeInt_(v, fallback) {
+  const n = Number(v);
+  return isNaN(n) ? fallback : Math.max(0, Math.floor(n));
+}
+
+function pctToRatio_(pctOrUndefined, fallbackRatio) {
+  const n = Number(pctOrUndefined);
+  if (isNaN(n)) return fallbackRatio;
+  return n > 1 ? n / 100 : n;
+}
+
+function normalizePctOrRatio_(val, fallbackRatio) {
+  const n = Number(val);
+  if (isNaN(n)) return fallbackRatio;
+  const ratio = n > 1 ? n / 100 : n;
+  return clampPct_(ratio, fallbackRatio);
 }
 
 function qtyToPallets_(qty, unitsPerPallet) {
