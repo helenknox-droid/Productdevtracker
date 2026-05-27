@@ -22,6 +22,8 @@ The generated report columns are:
 
 Source data starts at row 6, so the script treats row 5 as the header row.
 The target tab is cleared and rebuilt each time the report runs.
+If no deadlines match the four-week window, the target tab shows a short
+message and you can run the diagnostics report described below.
 
 ### Header names currently used
 
@@ -40,6 +42,8 @@ these expected names against the real row 5 source headers:
 | Deadline columns | Any header containing `deadline` |
 
 Deadline values are expected in year-week format, for example `2026-W43`.
+The parser also accepts common variants such as `2026-WK43`, `2026 Week 43`,
+and `W43 2026`.
 The report includes deadlines from the current ISO week through 4 weeks ahead,
 inclusive.
 
@@ -53,7 +57,27 @@ inclusive.
 5. Run `buildOwnBrandUpcomingDeadlinesReport`.
 
 After the spreadsheet is reloaded, the script also adds an **Own Brand Reports**
-menu with a **Build Upcoming Deadlines** item.
+menu with:
+
+- **Build Upcoming Deadlines**
+- **Build Deadline Diagnostics**
+
+### Troubleshooting an empty report
+
+If the report returns no deadline rows:
+
+1. Run **Own Brand Reports > Build Deadline Diagnostics**.
+2. Check the `Own Brand - Deadline Diagnostics` tab.
+3. Review:
+   - how many deadline columns were found,
+   - how many populated deadline cells were checked,
+   - how many values parsed as year-week dates,
+   - how many were inside the upcoming four-week window,
+   - sample dates before the window, after the window, or not parseable.
+
+For example, if today is in `2026-W22`, the report window is roughly
+`2026-W22` through `2026-W26`. A deadline like `2026-W43` is valid, but it will
+not appear because it is outside the next four weeks.
 
 ### Remaining check
 
