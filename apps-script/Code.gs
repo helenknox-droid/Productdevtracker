@@ -16,11 +16,11 @@ const REPORT_CONFIG = {
   columns: {
     referenceNumber: {
       expectedColumn: 'C',
-      headers: ['Reference Number', 'Reference No', 'Ref Number', 'Ref No'],
+      headers: ['Reference Number'],
     },
     currentStage: {
       expectedColumn: 'D',
-      headers: ['Current Stage'],
+      headers: ['Current Gate'],
     },
     status: {
       expectedColumn: 'F',
@@ -28,15 +28,20 @@ const REPORT_CONFIG = {
     },
     launchDatePrimary: {
       expectedColumn: 'I',
-      headers: ['Launch Date', 'Launch Week'],
+      headers: ['Earliest BQID Launch Date'],
     },
     launchDateFallback: {
       expectedColumn: 'J',
-      headers: ['Fallback Launch Date', 'Launch Date Fallback', 'Manual Launch Date'],
+      headers: ['Target Launch Date (pre BQID Link)'],
     },
-    componentName: {
+    componentNameCreated: {
+      expectedColumn: 'P',
+      headers: ['NS NAME (Once Created)'],
+      required: false,
+    },
+    briefName: {
       expectedColumn: 'L',
-      headers: ['Brief Name', 'Component Name'],
+      headers: ['Brief Name'],
     },
   },
 };
@@ -117,7 +122,7 @@ function buildDeadlineRows_(sourceValues, columnMap, deadlineColumns, config) {
         sortDate: deadlineWeekStart,
         values: [
           referenceNumber,
-          getValueByColumn_(sourceRow, columnMap.componentName),
+          resolveComponentName_(sourceRow, columnMap),
           launchDate,
           getValueByColumn_(sourceRow, columnMap.status),
           getValueByColumn_(sourceRow, columnMap.currentStage),
@@ -152,6 +157,15 @@ function resolveLaunchDate_(primaryLaunchDate, fallbackLaunchDate, noLinkedBouqu
   return primaryLaunchDate;
 }
 
+function resolveComponentName_(sourceRow, columnMap) {
+  const createdComponentName = getValueByColumn_(sourceRow, columnMap.componentNameCreated);
+  if (!isBlank_(createdComponentName)) {
+    return createdComponentName;
+  }
+
+  return getValueByColumn_(sourceRow, columnMap.briefName);
+}
+
 function buildColumnMap_(headerValues, config) {
   return Object.keys(config.columns).reduce((columnMap, columnKey) => {
     columnMap[columnKey] = findColumnIndexByHeader_(headerValues, config.columns[columnKey], columnKey);
@@ -179,6 +193,10 @@ function findColumnIndexByHeader_(headerValues, columnConfig, columnKey) {
       `Multiple columns matched ${columnKey}: ${aliases.join(', ')}. ` +
         `Please make the source headers unique.`
     );
+  }
+
+  if (columnConfig.required === false) {
+    return null;
   }
 
   throw new Error(
@@ -325,6 +343,10 @@ function getOrCreateSheet_(spreadsheet, sheetName) {
 }
 
 function getValueByColumn_(row, columnIndex) {
+  if (columnIndex === null) {
+    return '';
+  }
+
   return row[columnIndex];
 }
 

@@ -12,10 +12,10 @@ The generated report columns are:
 | Column | Header | Source |
 | --- | --- | --- |
 | A | Reference Number | Header-matched from row 5; originally column C |
-| B | Component Name | Header-matched from row 5; originally column L |
-| C | Launch Date | Header-matched primary launch date; if it says `no linked bouquet IDs`, use the fallback launch date |
+| B | Component Name | `NS NAME (Once Created)` when populated; otherwise `Brief Name` |
+| C | Launch Date | `Earliest BQID Launch Date`; if it says `no linked bouquet IDs`, use `Target Launch Date (pre BQID Link)` |
 | D | Status | Header-matched from row 5; originally column F |
-| E | Current Stage | Header-matched from row 5; originally column D |
+| E | Current Stage | Header-matched from `Current Gate`; originally column D |
 | F | Stage | Derived from the deadline column header, e.g. `Gate 6 Deadline` becomes `Gate 6` |
 | G | Deadline | Any header containing `deadline`, limited to the next 4 weeks |
 | H | Comments | Blank comment column refreshed on every run |
@@ -30,12 +30,13 @@ these expected names against the real row 5 source headers:
 
 | Field | Accepted source header names |
 | --- | --- |
-| Reference Number | `Reference Number`, `Reference No`, `Ref Number`, `Ref No` |
-| Current Stage | `Current Stage` |
+| Reference Number | `Reference Number` |
+| Current Stage | `Current Gate` |
 | Status | `Status` |
-| Primary Launch Date | `Launch Date`, `Launch Week` |
-| Fallback Launch Date | `Fallback Launch Date`, `Launch Date Fallback`, `Manual Launch Date` |
-| Component Name | `Brief Name`, `Component Name` |
+| Primary Launch Date | `Earliest BQID Launch Date` |
+| Fallback Launch Date | `Target Launch Date (pre BQID Link)` |
+| Created Component Name | `NS NAME (Once Created)`; optional, originally column P |
+| Brief Name fallback | `Brief Name`; originally column L |
 | Deadline columns | Any header containing `deadline` |
 
 Deadline values are expected in year-week format, for example `2026-W43`.
