@@ -17,7 +17,7 @@ The generated report columns are:
 | D | Status | Header-matched from row 5; originally column F |
 | E | Current Stage | Header-matched from `Current Gate`; originally column D |
 | F | Stage | Derived from the deadline column header, e.g. `Gate 6 Deadline` becomes `Gate 6` |
-| G | Deadline | Any header containing `deadline`, limited to the next 4 weeks |
+| G | Deadline | Gate deadline headers such as `Gate 0 Deadline`, limited to the next 4 weeks |
 | H | Comments | Blank comment column refreshed on every run |
 
 Source data starts at row 6, so the script treats row 5 as the header row.
@@ -39,7 +39,7 @@ these expected names against the real row 5 source headers:
 | Fallback Launch Date | `Target Launch Date (pre BQID Link)` |
 | Created Component Name | `NS NAME (Once Created)`; optional, originally column P |
 | Brief Name fallback | `Brief Name`; originally column L |
-| Deadline columns | Any header containing `deadline` |
+| Deadline columns | Gate deadline headers matching `Gate <number> Deadline`, for example `Gate 0 Deadline` through `Gate 6 Deadline` |
 
 Deadline values are expected in year-week format, for example `2026-W43`.
 The parser also accepts common variants such as `2026-WK43`, `2026 Week 43`,

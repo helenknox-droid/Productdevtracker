@@ -2,8 +2,8 @@
  * Builds the "Own Brand - Upcoming Deadlines" report from "Own-Brand Stage & Gates".
  *
  * Source data starts on row 6, so row 5 is treated as the header row.
- * The report discovers deadline columns dynamically by finding headers that
- * contain the word "deadline".
+ * The report discovers gate deadline columns dynamically, for example
+ * "Gate 0 Deadline" and "Gate 6 Deadline".
  */
 const REPORT_CONFIG = {
   sourceSheetName: 'Own-Brand Stage & Gates',
@@ -11,7 +11,6 @@ const REPORT_CONFIG = {
   diagnosticsSheetName: 'Own Brand - Deadline Diagnostics',
   dataStartRow: 6,
   noLinkedBouquetValue: 'no linked bouquet ids',
-  deadlineHeaderContains: 'deadline',
   upcomingWeeks: 4,
   includeCommentsColumn: true,
   columns: {
@@ -120,7 +119,7 @@ function getReportContext_(spreadsheet, config) {
   const headerValues = getHeaderValues_(sourceSheet, config.dataStartRow - 1);
   const sourceValues = getSourceValues_(sourceSheet, config.dataStartRow);
   const columnMap = buildColumnMap_(headerValues, config);
-  const deadlineColumns = findDeadlineColumns_(headerValues, config.deadlineHeaderContains);
+  const deadlineColumns = findDeadlineColumns_(headerValues);
 
   return {
     sourceSheet,
@@ -307,15 +306,14 @@ function findColumnIndexByHeader_(headerValues, columnConfig, columnKey) {
   );
 }
 
-function findDeadlineColumns_(headerValues, deadlineHeaderContains) {
-  const needle = normaliseHeader_(deadlineHeaderContains);
+function findDeadlineColumns_(headerValues) {
   const deadlineColumns = headerValues
     .map((header, index) => ({
       index,
       header: String(header || '').trim(),
       normalisedHeader: normaliseHeader_(header),
     }))
-    .filter((column) => column.normalisedHeader.indexOf(needle) !== -1)
+    .filter((column) => isGateDeadlineHeader_(column.normalisedHeader))
     .map((column) => ({
       index: column.index,
       header: column.header,
@@ -323,10 +321,14 @@ function findDeadlineColumns_(headerValues, deadlineHeaderContains) {
     }));
 
   if (deadlineColumns.length === 0) {
-    throw new Error(`No deadline columns found. Expected headers containing "${deadlineHeaderContains}".`);
+    throw new Error('No gate deadline columns found. Expected headers like "Gate 0 Deadline".');
   }
 
   return deadlineColumns;
+}
+
+function isGateDeadlineHeader_(normalisedHeader) {
+  return /^gate \d+ deadline\b/.test(normalisedHeader);
 }
 
 function stageFromDeadlineHeader_(header) {
