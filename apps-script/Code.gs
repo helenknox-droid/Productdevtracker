@@ -53,7 +53,7 @@ const BASE_REPORT_HEADERS = [
   'Launch Date',
   'Status',
   'Current Stage',
-  'Stage',
+  'Upcoming Gate',
   'Deadline',
 ];
 
@@ -447,10 +447,19 @@ function writeReport_(targetSheet, rows, config) {
   const output = [headers].concat(rows.map((row) => padRow_(row, headers.length)));
   const headerRow = config.targetHeaderRow || 1;
 
-  targetSheet.clearContents();
+  clearReportOutput_(targetSheet, headerRow);
   targetSheet.getRange(headerRow, 1, output.length, headers.length).setValues(output);
   targetSheet.setFrozenRows(headerRow);
   targetSheet.autoResizeColumns(1, headers.length);
+}
+
+function clearReportOutput_(targetSheet, headerRow) {
+  const rowsToClear = targetSheet.getMaxRows() - headerRow + 1;
+  if (rowsToClear < 1) {
+    return;
+  }
+
+  targetSheet.getRange(headerRow, 1, rowsToClear, targetSheet.getMaxColumns()).clearContent();
 }
 
 function writeEmptyReportNote_(targetSheet, diagnostics, config) {

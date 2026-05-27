@@ -16,14 +16,15 @@ The generated report columns are:
 | C | Launch Date | `Earliest BQID Launch Date`; if it says `no linked bouquet IDs`, use `Target Launch Date (pre BQID Link)` |
 | D | Status | Header-matched from row 5; originally column F |
 | E | Current Stage | Header-matched from `Current Gate`; originally column D |
-| F | Stage | Derived from the deadline column header, e.g. `Gate 6 Deadline` becomes `Gate 6` |
+| F | Upcoming Gate | Derived from the deadline column header, e.g. `Gate 6 Deadline` becomes `Gate 6` |
 | G | Deadline | Gate deadline headers such as `Gate 0 Deadline`, limited to the next 4 weeks |
 | H | Comments | Blank comment column refreshed on every run |
 
 Source data starts at row 6, so the script treats row 5 as the header row.
 The target report starts at row 2: row 2 is the header row and returned
 deadline rows begin at row 3.
-The target tab is cleared and rebuilt each time the report runs.
+The target tab is cleared and rebuilt from row 2 downward each time the report
+runs, leaving row 1 untouched.
 If no deadlines match the four-week window, the target tab shows a short
 message and you can run the diagnostics report described below.
 
