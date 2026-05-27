@@ -21,6 +21,8 @@ The generated report columns are:
 | H | Comments | Blank comment column refreshed on every run |
 
 Source data starts at row 6, so the script treats row 5 as the header row.
+The target report starts at row 2: row 2 is the header row and returned
+deadline rows begin at row 3.
 The target tab is cleared and rebuilt each time the report runs.
 If no deadlines match the four-week window, the target tab shows a short
 message and you can run the diagnostics report described below.

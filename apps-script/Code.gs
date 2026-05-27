@@ -10,6 +10,7 @@ const REPORT_CONFIG = {
   targetSheetName: 'Own Brand - Upcoming Deadlines',
   diagnosticsSheetName: 'Own Brand - Deadline Diagnostics',
   dataStartRow: 6,
+  targetHeaderRow: 2,
   noLinkedBouquetValue: 'no linked bouquet ids',
   upcomingWeeks: 4,
   includeCommentsColumn: true,
@@ -444,10 +445,11 @@ function getHeaderValues_(sourceSheet, headerRow) {
 function writeReport_(targetSheet, rows, config) {
   const headers = getReportHeaders_(config);
   const output = [headers].concat(rows.map((row) => padRow_(row, headers.length)));
+  const headerRow = config.targetHeaderRow || 1;
 
   targetSheet.clearContents();
-  targetSheet.getRange(1, 1, output.length, headers.length).setValues(output);
-  targetSheet.setFrozenRows(1);
+  targetSheet.getRange(headerRow, 1, output.length, headers.length).setValues(output);
+  targetSheet.setFrozenRows(headerRow);
   targetSheet.autoResizeColumns(1, headers.length);
 }
 
@@ -462,8 +464,9 @@ function writeEmptyReportNote_(targetSheet, diagnostics, config) {
     `Run "Own Brand Reports > Build Deadline Diagnostics" for details.`,
   ].join(' ');
   const noteRow = padRow_([message], headers.length);
+  const noteRowNumber = (config.targetHeaderRow || 1) + 1;
 
-  targetSheet.getRange(2, 1, 1, headers.length).setValues([noteRow]);
+  targetSheet.getRange(noteRowNumber, 1, 1, headers.length).setValues([noteRow]);
 }
 
 function writeDiagnostics_(diagnosticsSheet, diagnostics, context, config) {
