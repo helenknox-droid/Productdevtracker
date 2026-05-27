@@ -1,43 +1,47 @@
 /**
- * Builds the "Own Brand-Upcoming Deadlines" report from "Own Brand Stage and Gates".
+ * Builds the "Own Brand - Upcoming Deadlines" report from "Own-Brand Stage & Gates".
  *
- * Setup:
- * 1. Review REPORT_CONFIG, especially status/current stage columns and deadlineStages.
- * 2. Paste this file into the spreadsheet's Apps Script project.
- * 3. Run buildOwnBrandUpcomingDeadlinesReport(), or use the custom menu after reload.
+ * Source data starts on row 6, so row 5 is treated as the header row.
+ * The report discovers deadline columns dynamically by finding headers that
+ * contain the word "deadline".
  */
 const REPORT_CONFIG = {
-  sourceSheetName: 'Own Brand Stage and Gates',
-  targetSheetName: 'Own Brand-Upcoming Deadlines',
+  sourceSheetName: 'Own-Brand Stage & Gates',
+  targetSheetName: 'Own Brand - Upcoming Deadlines',
   dataStartRow: 6,
   noLinkedBouquetValue: 'no linked bouquet ids',
+  deadlineHeaderContains: 'deadline',
+  upcomingWeeks: 4,
+  includeCommentsColumn: true,
   columns: {
-    referenceNumber: 'C',
-    launchDatePrimary: 'I',
-    launchDateFallback: 'J',
-    componentName: 'L',
-
-    // TODO: Replace these with the source columns once confirmed.
-    status: '',
-    currentStage: '',
+    referenceNumber: {
+      expectedColumn: 'C',
+      headers: ['Reference Number', 'Reference No', 'Ref Number', 'Ref No'],
+    },
+    currentStage: {
+      expectedColumn: 'D',
+      headers: ['Current Stage'],
+    },
+    status: {
+      expectedColumn: 'F',
+      headers: ['Status'],
+    },
+    launchDatePrimary: {
+      expectedColumn: 'I',
+      headers: ['Launch Date', 'Launch Week'],
+    },
+    launchDateFallback: {
+      expectedColumn: 'J',
+      headers: ['Fallback Launch Date', 'Launch Date Fallback', 'Manual Launch Date'],
+    },
+    componentName: {
+      expectedColumn: 'L',
+      headers: ['Brief Name', 'Component Name'],
+    },
   },
-
-  /**
-   * TODO: Replace these examples with every source deadline column.
-   *
-   * If the stage name is in the header row, use:
-   *   { stageFromHeaderColumn: 'M', deadlineColumn: 'M' }
-   *
-   * If the stage name should be fixed, use:
-   *   { stage: 'Design Sign-off', deadlineColumn: 'N' }
-   */
-  deadlineStages: [
-    // { stageFromHeaderColumn: 'M', deadlineColumn: 'M' },
-    // { stage: 'Design Sign-off', deadlineColumn: 'N' },
-  ],
 };
 
-const REPORT_HEADERS = [
+const BASE_REPORT_HEADERS = [
   'Reference Number',
   'Component Name',
   'Launch Date',
@@ -61,8 +65,6 @@ function onOpen() {
  * Creates or refreshes the upcoming deadlines report sheet.
  */
 function buildOwnBrandUpcomingDeadlinesReport() {
-  validateReportConfig_(REPORT_CONFIG);
-
   const spreadsheet = SpreadsheetApp.getActiveSpreadsheet();
   const sourceSheet = spreadsheet.getSheetByName(REPORT_CONFIG.sourceSheetName);
   if (!sourceSheet) {
@@ -70,61 +72,77 @@ function buildOwnBrandUpcomingDeadlinesReport() {
   }
 
   const targetSheet = getOrCreateSheet_(spreadsheet, REPORT_CONFIG.targetSheetName);
-  const sourceValues = getSourceValues_(sourceSheet, REPORT_CONFIG.dataStartRow);
   const headerValues = getHeaderValues_(sourceSheet, REPORT_CONFIG.dataStartRow - 1);
-  const rows = buildDeadlineRows_(sourceValues, headerValues, REPORT_CONFIG);
+  const sourceValues = getSourceValues_(sourceSheet, REPORT_CONFIG.dataStartRow);
+  const columnMap = buildColumnMap_(headerValues, REPORT_CONFIG);
+  const deadlineColumns = findDeadlineColumns_(headerValues, REPORT_CONFIG.deadlineHeaderContains);
+  const rows = buildDeadlineRows_(sourceValues, columnMap, deadlineColumns, REPORT_CONFIG);
 
-  writeReport_(targetSheet, rows);
+  writeReport_(targetSheet, rows, REPORT_CONFIG);
 }
 
 /**
- * Converts source rows into one output row per populated deadline.
+ * Converts source rows into one output row per qualifying upcoming deadline.
  *
  * @param {Array<Array<*>>} sourceValues
- * @param {Array<*>} headerValues
+ * @param {Object} columnMap
+ * @param {Array<Object>} deadlineColumns
  * @param {Object} config
  * @return {Array<Array<*>>}
  */
-function buildDeadlineRows_(sourceValues, headerValues, config) {
-  const columns = normaliseColumnConfig_(config.columns);
-  const deadlineStages = config.deadlineStages.map(normaliseDeadlineStage_);
+function buildDeadlineRows_(sourceValues, columnMap, deadlineColumns, config) {
+  const upcomingWindow = getUpcomingWeekWindow_(new Date(), config.upcomingWeeks);
   const reportRows = [];
 
   sourceValues.forEach((sourceRow) => {
-    const referenceNumber = getValueByColumn_(sourceRow, columns.referenceNumber);
+    const referenceNumber = getValueByColumn_(sourceRow, columnMap.referenceNumber);
     if (isBlank_(referenceNumber)) {
       return;
     }
 
     const launchDate = resolveLaunchDate_(
-      getValueByColumn_(sourceRow, columns.launchDatePrimary),
-      getValueByColumn_(sourceRow, columns.launchDateFallback),
+      getValueByColumn_(sourceRow, columnMap.launchDatePrimary),
+      getValueByColumn_(sourceRow, columnMap.launchDateFallback),
       config.noLinkedBouquetValue
     );
 
-    deadlineStages.forEach((deadlineStage) => {
-      const deadline = getValueByColumn_(sourceRow, deadlineStage.deadlineColumn);
-      if (isBlank_(deadline)) {
+    deadlineColumns.forEach((deadlineColumn) => {
+      const deadline = getValueByColumn_(sourceRow, deadlineColumn.index);
+      const deadlineWeekStart = parseYearWeekStart_(deadline);
+      if (!deadlineWeekStart || !isDateInRange_(deadlineWeekStart, upcomingWindow)) {
         return;
       }
 
-      reportRows.push([
-        referenceNumber,
-        getOptionalValueByColumn_(sourceRow, columns.componentName),
-        launchDate,
-        getOptionalValueByColumn_(sourceRow, columns.status),
-        getOptionalValueByColumn_(sourceRow, columns.currentStage),
-        resolveStageName_(sourceRow, headerValues, deadlineStage),
-        deadline,
-      ]);
+      reportRows.push({
+        sortDate: deadlineWeekStart,
+        values: [
+          referenceNumber,
+          getValueByColumn_(sourceRow, columnMap.componentName),
+          launchDate,
+          getValueByColumn_(sourceRow, columnMap.status),
+          getValueByColumn_(sourceRow, columnMap.currentStage),
+          deadlineColumn.stage,
+          deadline,
+        ],
+      });
     });
   });
 
-  return reportRows;
+  reportRows.sort((a, b) => {
+    const dateDifference = a.sortDate.getTime() - b.sortDate.getTime();
+    if (dateDifference !== 0) {
+      return dateDifference;
+    }
+
+    return String(a.values[0]).localeCompare(String(b.values[0]));
+  });
+
+  return reportRows.map((row) => row.values);
 }
 
 /**
- * Uses column I unless it contains "no linked bouquet IDs"; then column J is used.
+ * Uses the primary launch date unless it contains "no linked bouquet IDs";
+ * in that case it uses the fallback launch date.
  */
 function resolveLaunchDate_(primaryLaunchDate, fallbackLaunchDate, noLinkedBouquetValue) {
   if (normaliseText_(primaryLaunchDate) === normaliseText_(noLinkedBouquetValue)) {
@@ -134,23 +152,128 @@ function resolveLaunchDate_(primaryLaunchDate, fallbackLaunchDate, noLinkedBouqu
   return primaryLaunchDate;
 }
 
-function resolveStageName_(sourceRow, headerValues, deadlineStage) {
-  if (deadlineStage.stage) {
-    return deadlineStage.stage;
-  }
+function buildColumnMap_(headerValues, config) {
+  return Object.keys(config.columns).reduce((columnMap, columnKey) => {
+    columnMap[columnKey] = findColumnIndexByHeader_(headerValues, config.columns[columnKey], columnKey);
+    return columnMap;
+  }, {});
+}
 
-  if (deadlineStage.stageColumn) {
-    const stageFromRow = getValueByColumn_(sourceRow, deadlineStage.stageColumn);
-    if (!isBlank_(stageFromRow)) {
-      return stageFromRow;
+function findColumnIndexByHeader_(headerValues, columnConfig, columnKey) {
+  const aliases = columnConfig.headers || [];
+  const normalisedAliases = aliases.map(normaliseHeader_);
+  const matchingIndexes = [];
+
+  headerValues.forEach((header, index) => {
+    if (normalisedAliases.indexOf(normaliseHeader_(header)) !== -1) {
+      matchingIndexes.push(index);
     }
+  });
+
+  if (matchingIndexes.length === 1) {
+    return matchingIndexes[0];
   }
 
-  if (deadlineStage.stageFromHeaderColumn) {
-    return getValueByColumn_(headerValues, deadlineStage.stageFromHeaderColumn);
+  if (matchingIndexes.length > 1) {
+    throw new Error(
+      `Multiple columns matched ${columnKey}: ${aliases.join(', ')}. ` +
+        `Please make the source headers unique.`
+    );
   }
 
-  return '';
+  throw new Error(
+    `Could not find a source column for ${columnKey}. Expected one of these headers: ` +
+      `${aliases.join(', ')}. The original expected column was ${columnConfig.expectedColumn}. ` +
+      `Available headers: ${listAvailableHeaders_(headerValues)}`
+  );
+}
+
+function findDeadlineColumns_(headerValues, deadlineHeaderContains) {
+  const needle = normaliseHeader_(deadlineHeaderContains);
+  const deadlineColumns = headerValues
+    .map((header, index) => ({
+      index,
+      header: String(header || '').trim(),
+      normalisedHeader: normaliseHeader_(header),
+    }))
+    .filter((column) => column.normalisedHeader.indexOf(needle) !== -1)
+    .map((column) => ({
+      index: column.index,
+      header: column.header,
+      stage: stageFromDeadlineHeader_(column.header),
+    }));
+
+  if (deadlineColumns.length === 0) {
+    throw new Error(`No deadline columns found. Expected headers containing "${deadlineHeaderContains}".`);
+  }
+
+  return deadlineColumns;
+}
+
+function stageFromDeadlineHeader_(header) {
+  const stage = String(header || '')
+    .replace(/deadline/gi, '')
+    .replace(/[_\-:]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  if (/^\d+$/.test(stage)) {
+    return `Gate ${stage}`;
+  }
+
+  return toTitleCase_(stage || header);
+}
+
+function getUpcomingWeekWindow_(today, upcomingWeeks) {
+  const start = startOfIsoWeek_(today);
+  const end = addDays_(start, upcomingWeeks * 7);
+  return { start, end };
+}
+
+function parseYearWeekStart_(value) {
+  if (value instanceof Date && !isNaN(value.getTime())) {
+    return startOfIsoWeek_(value);
+  }
+
+  const match = String(value || '')
+    .trim()
+    .match(/^(\d{4})\s*[-/]?\s*W?(\d{1,2})$/i);
+
+  if (!match) {
+    return null;
+  }
+
+  const year = Number(match[1]);
+  const week = Number(match[2]);
+  if (week < 1 || week > 53) {
+    return null;
+  }
+
+  return isoWeekStartDate_(year, week);
+}
+
+function isoWeekStartDate_(year, week) {
+  const fourthOfJanuary = new Date(year, 0, 4);
+  const firstIsoWeekStart = startOfIsoWeek_(fourthOfJanuary);
+  return addDays_(firstIsoWeekStart, (week - 1) * 7);
+}
+
+function startOfIsoWeek_(date) {
+  const start = new Date(date.getFullYear(), date.getMonth(), date.getDate());
+  const day = start.getDay() || 7;
+  start.setDate(start.getDate() - day + 1);
+  start.setHours(0, 0, 0, 0);
+  return start;
+}
+
+function addDays_(date, days) {
+  const result = new Date(date.getTime());
+  result.setDate(result.getDate() + days);
+  return result;
+}
+
+function isDateInRange_(date, range) {
+  return date.getTime() >= range.start.getTime() && date.getTime() <= range.end.getTime();
 }
 
 function getSourceValues_(sourceSheet, dataStartRow) {
@@ -173,77 +296,31 @@ function getHeaderValues_(sourceSheet, headerRow) {
   return sourceSheet.getRange(headerRow, 1, 1, sourceSheet.getLastColumn()).getValues()[0];
 }
 
-function writeReport_(targetSheet, rows) {
-  targetSheet.clearContents();
+function writeReport_(targetSheet, rows, config) {
+  const headers = getReportHeaders_(config);
+  const output = [headers].concat(rows.map((row) => padRow_(row, headers.length)));
 
-  const output = [REPORT_HEADERS].concat(rows);
-  targetSheet.getRange(1, 1, output.length, REPORT_HEADERS.length).setValues(output);
+  targetSheet.clearContents();
+  targetSheet.getRange(1, 1, output.length, headers.length).setValues(output);
   targetSheet.setFrozenRows(1);
-  targetSheet.autoResizeColumns(1, REPORT_HEADERS.length);
+  targetSheet.autoResizeColumns(1, headers.length);
+}
+
+function getReportHeaders_(config) {
+  return config.includeCommentsColumn ? BASE_REPORT_HEADERS.concat(['Comments']) : BASE_REPORT_HEADERS;
+}
+
+function padRow_(row, targetLength) {
+  const paddedRow = row.slice();
+  while (paddedRow.length < targetLength) {
+    paddedRow.push('');
+  }
+
+  return paddedRow;
 }
 
 function getOrCreateSheet_(spreadsheet, sheetName) {
   return spreadsheet.getSheetByName(sheetName) || spreadsheet.insertSheet(sheetName);
-}
-
-function validateReportConfig_(config) {
-  const requiredColumns = [
-    'referenceNumber',
-    'launchDatePrimary',
-    'launchDateFallback',
-    'componentName',
-  ];
-
-  requiredColumns.forEach((columnName) => {
-    if (!config.columns[columnName]) {
-      throw new Error(`Missing required column config: ${columnName}`);
-    }
-  });
-
-  if (!Array.isArray(config.deadlineStages) || config.deadlineStages.length === 0) {
-    throw new Error(
-      'REPORT_CONFIG.deadlineStages is empty. Add every stage/deadline column before running the report.'
-    );
-  }
-
-  config.deadlineStages.forEach((deadlineStage, index) => {
-    if (!deadlineStage.deadlineColumn) {
-      throw new Error(`Missing deadlineColumn for deadlineStages[${index}]`);
-    }
-  });
-}
-
-function normaliseColumnConfig_(columns) {
-  return Object.keys(columns).reduce((normalised, key) => {
-    normalised[key] = columns[key] ? columnLetterToIndex_(columns[key]) : null;
-    return normalised;
-  }, {});
-}
-
-function normaliseDeadlineStage_(deadlineStage) {
-  return {
-    stage: deadlineStage.stage || '',
-    stageColumn: deadlineStage.stageColumn ? columnLetterToIndex_(deadlineStage.stageColumn) : null,
-    stageFromHeaderColumn: deadlineStage.stageFromHeaderColumn
-      ? columnLetterToIndex_(deadlineStage.stageFromHeaderColumn)
-      : null,
-    deadlineColumn: columnLetterToIndex_(deadlineStage.deadlineColumn),
-  };
-}
-
-function columnLetterToIndex_(columnLetter) {
-  const letters = String(columnLetter).trim().toUpperCase();
-  if (!/^[A-Z]+$/.test(letters)) {
-    throw new Error(`Invalid column letter: ${columnLetter}`);
-  }
-
-  return letters.split('').reduce((index, letter) => {
-    return index * 26 + letter.charCodeAt(0) - 64;
-  }, 0) - 1;
-}
-
-function getOptionalValueByColumn_(row, columnIndex) {
-  return columnIndex === null ? '' : getValueByColumn_(row, columnIndex);
 }
 
 function getValueByColumn_(row, columnIndex) {
@@ -254,6 +331,23 @@ function isBlank_(value) {
   return value === '' || value === null || typeof value === 'undefined';
 }
 
+function normaliseHeader_(value) {
+  return normaliseText_(value).replace(/[^a-z0-9]+/g, ' ').trim();
+}
+
 function normaliseText_(value) {
   return String(value || '').trim().toLowerCase();
+}
+
+function toTitleCase_(value) {
+  return String(value || '').replace(/\w\S*/g, (word) => {
+    return word.charAt(0).toUpperCase() + word.slice(1).toLowerCase();
+  });
+}
+
+function listAvailableHeaders_(headerValues) {
+  return headerValues
+    .map((header) => String(header || '').trim())
+    .filter(Boolean)
+    .join(', ');
 }
