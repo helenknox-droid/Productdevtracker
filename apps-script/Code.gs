@@ -213,6 +213,7 @@ function findDeadlineColumns_(headerValues, deadlineHeaderContains) {
 function stageFromDeadlineHeader_(header) {
   const stage = String(header || '')
     .replace(/deadline/gi, '')
+    .replace(/\b(date|week)\b/gi, '')
     .replace(/[_\-:]+/g, ' ')
     .replace(/\s+/g, ' ')
     .trim();
