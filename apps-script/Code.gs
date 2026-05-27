@@ -285,7 +285,7 @@ function getSourceValues_(sourceSheet, dataStartRow) {
 
   return sourceSheet
     .getRange(dataStartRow, 1, lastRow - dataStartRow + 1, lastColumn)
-    .getValues();
+    .getDisplayValues();
 }
 
 function getHeaderValues_(sourceSheet, headerRow) {
@@ -293,7 +293,7 @@ function getHeaderValues_(sourceSheet, headerRow) {
     return [];
   }
 
-  return sourceSheet.getRange(headerRow, 1, 1, sourceSheet.getLastColumn()).getValues()[0];
+  return sourceSheet.getRange(headerRow, 1, 1, sourceSheet.getLastColumn()).getDisplayValues()[0];
 }
 
 function writeReport_(targetSheet, rows, config) {
